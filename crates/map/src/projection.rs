@@ -63,19 +63,16 @@ pub fn lookup(code: &str) -> Result<(String, String), String> {
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("unknown projection '{code}'"));
     }
-    let def = digits
-        .parse::<u16>()
-        .ok()
-        .and_then(crs_definitions::from_code)
-        .ok_or_else(|| format!("unknown coordinate system EPSG:{}", digits.trim_start_matches('0')))?;
-    let n = def.code;
-    if def.proj4.contains("+proj=longlat") {
+    let unknown = || format!("unknown coordinate system EPSG:{}", digits.trim_start_matches('0'));
+    let n = digits.parse::<u16>().map_err(|_| unknown())?;
+    let def = rustgis_data::raster::crs::epsg_proj4(n).ok_or_else(unknown)?;
+    if def.contains("+proj=longlat") {
         return Err(format!("EPSG:{n} is in degrees: pick a projected coordinate system"));
     }
-    if def.proj4.contains("+proj=geocent") {
+    if def.contains("+proj=geocent") {
         return Err(format!("EPSG:{n} isn't a map projection"));
     }
-    Ok((def.proj4.to_string(), format!("EPSG:{n}")))
+    Ok((def.to_string(), format!("EPSG:{n}")))
 }
 
 /// Where a projection is meant to be used. Points outside are not drawn: far from it most
@@ -389,6 +386,17 @@ mod tests {
         // Equal Earth by its EPSG code goes to the built-in engine too.
         let ee = Projector::new("EPSG:8857").unwrap();
         assert!(format!("{ee:?}").contains("eqearth"));
+        // Codes crs-definitions lacks (EPSG 9020–20003) come from the data crate's own table
+        // (opengeos/RustGIS#198): MAGNA-SIRGAS 2018 / Origen-Nacional, SIRGAS-Chile 2016 / UTM 19S.
+        let (bogota, santiago) = (Coord::new(-74.08, 4.65), Coord::new(-70.65, -33.45));
+        for (ok, proj, city) in [("EPSG:9377", "tmerc", bogota), ("epsg:9155", "utm", santiago)] {
+            let (def, label) = lookup(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+            assert!(def.contains(&format!("+proj={proj}")) && label == ok.to_ascii_uppercase(), "{ok}: {def} {label}");
+            let p = Projector::new(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+            let back = p.inverse(p.forward(city).unwrap()).unwrap();
+            assert!((back.x - city.x).abs() < 1e-7 && (back.y - city.y).abs() < 1e-7, "{ok}: {back:?}");
+        }
+        assert!(lookup("EPSG:9148").unwrap_err().contains("degrees"), "SIRGAS-Chile 2013 is geographic");
     }
 
     #[test]

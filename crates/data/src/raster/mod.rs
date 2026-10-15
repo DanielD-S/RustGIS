@@ -7,6 +7,7 @@
 pub mod ascii;
 pub mod cog;
 pub mod crs;
+mod epsg_gap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gdal;
 pub mod geotiff;

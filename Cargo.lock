@@ -3868,7 +3868,6 @@ name = "rustgis-map"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
- "crs-definitions",
  "proj4rs",
  "roxmltree",
  "rustgis-data",
