@@ -3277,6 +3277,21 @@ fn url_requests_wait_for_the_front_end() {
     assert!(s.request_url(&json!({"url": "https://x.org/16"})).is_ok(), "room again once taken");
 }
 
+/// A mutating command that only left a request for the front end (the browser's `layer.addUrl`)
+/// leaves no undo step and nothing to save; one that changed the project still does.
+#[test]
+fn a_pending_answer_is_no_undo_step() {
+    let mut s = Session::new(Project::default());
+    let undo = s.undo.len();
+    let r = s.guarded("Add Data From URL", true, |_| Ok(json!({"pending": true, "url": "https://x.org/a.geojson"})));
+    assert_eq!(r.unwrap()["pending"], true);
+    assert_eq!(s.undo.len(), undo);
+    assert!(!s.dirty);
+    assert!(s.run("map.new", &json!({"name": "B"})).is_ok());
+    assert_eq!(s.undo.len(), undo + 1);
+    assert!(s.dirty);
+}
+
 /// The app's downloads land in the project they were started for, as bytes (no base64); one
 /// whose project was closed meanwhile is dropped.
 #[test]

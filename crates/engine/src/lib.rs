@@ -583,6 +583,9 @@ impl Session {
             _ => res,
         };
         match (&res, snapshot) {
+            // A command that only left a request for the front end (`{"pending": true}`, a
+            // download in the browser) changed nothing: no undo step, nothing to save yet.
+            (Ok(v), Some(_)) if v.get("pending") == Some(&serde_json::Value::Bool(true)) => {}
             (Ok(_), Some(mut snap)) => {
                 // Undo keeps streamed layers' sources, not their windows: they read the view again.
                 strip_windows(&mut snap);
