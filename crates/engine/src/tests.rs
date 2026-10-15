@@ -3278,18 +3278,24 @@ fn url_requests_wait_for_the_front_end() {
 }
 
 /// A mutating command that only left a request for the front end (the browser's `layer.addUrl`)
-/// leaves no undo step and nothing to save; one that changed the project still does.
+/// leaves no undo step and nothing to save; one that changed the project still does, and so
+/// does one that merely answers "pending" (a plugin's command can't claim it changed nothing).
 #[test]
 fn a_pending_answer_is_no_undo_step() {
     let mut s = Session::new(Project::default());
     let undo = s.undo.len();
-    let r = s.guarded("Add Data From URL", true, |_| Ok(json!({"pending": true, "url": "https://x.org/a.geojson"})));
+    let p = json!({"url": "https://x.org/a.geojson"});
+    let r = s.guarded("Add Data From URL", true, |s| s.request_url(&p));
     assert_eq!(r.unwrap()["pending"], true);
     assert_eq!(s.undo.len(), undo);
     assert!(!s.dirty);
-    assert!(s.run("map.new", &json!({"name": "B"})).is_ok());
-    assert_eq!(s.undo.len(), undo + 1);
+    assert_eq!(s.take_url_requests().len(), 1);
+    let r = s.guarded("Plugin Command", true, |_| Ok(json!({"pending": true})));
+    assert!(r.is_ok());
+    assert_eq!(s.undo.len(), undo + 1, "an answer alone doesn't skip the step");
     assert!(s.dirty);
+    assert!(s.run("map.new", &json!({"name": "B"})).is_ok());
+    assert_eq!(s.undo.len(), undo + 2);
 }
 
 /// The app's downloads land in the project they were started for, as bytes (no base64); one

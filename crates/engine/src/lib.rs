@@ -330,6 +330,9 @@ pub struct Session {
     /// Downloads a command asked for where nothing may wait (the browser): the parameters of
     /// `layer.addUrl` calls, for the front end to fetch and add (see [`Session::take_url_requests`]).
     pub(crate) url_requests: Vec<serde_json::Value>,
+    /// Set by [`Session::request_url`] for [`Session::guarded`]: the command running changed
+    /// nothing, it only left a request (a plugin's own answer can't claim that).
+    request_only: bool,
     /// Query results the app ran off the frame (the SQL pane), waiting for `layer.addSql {"ran"}`:
     /// the id, the query and database (label) they came from, and the result.
     #[cfg(not(target_arch = "wasm32"))]
@@ -434,6 +437,7 @@ impl Session {
             downloading: Vec::new(),
             downloaded: Vec::new(),
             url_requests: Vec::new(),
+            request_only: false,
             #[cfg(not(target_arch = "wasm32"))]
             sql_results: Vec::new(),
         }
@@ -500,6 +504,7 @@ impl Session {
             }
             self.url_requests.push(p.clone());
         }
+        self.request_only = true;
         Ok(serde_json::json!({"pending": true, "url": url}))
     }
 
@@ -571,6 +576,7 @@ impl Session {
         let snapshot = mutates.then(|| self.project.clone());
         // Edit counts roll back with the project when a command fails part way.
         let counts = mutates.then(|| self.edit_counts.clone());
+        self.request_only = false;
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)))
             .unwrap_or_else(|_| Err(format!("{label} failed unexpectedly; the project was restored")));
         // A command that changed a streamed layer's features or fields (not by reading its
@@ -583,9 +589,10 @@ impl Session {
             _ => res,
         };
         match (&res, snapshot) {
-            // A command that only left a request for the front end (`{"pending": true}`, a
-            // download in the browser) changed nothing: no undo step, nothing to save yet.
-            (Ok(v), Some(_)) if v.get("pending") == Some(&serde_json::Value::Bool(true)) => {}
+            // A command that only left a request for the front end (a download in the browser,
+            // [`Session::request_url`]) changed nothing: no undo step, nothing to save yet. The
+            // session's own flag says so, not the answer, which a plugin's command could forge.
+            (Ok(_), Some(_)) if std::mem::take(&mut self.request_only) => {}
             (Ok(_), Some(mut snap)) => {
                 // Undo keeps streamed layers' sources, not their windows: they read the view again.
                 strip_windows(&mut snap);
