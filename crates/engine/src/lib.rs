@@ -577,6 +577,8 @@ impl Session {
         // Edit counts roll back with the project when a command fails part way.
         let counts = mutates.then(|| self.edit_counts.clone());
         self.request_only = false;
+        // Requests a failed command left for the front end go with its other changes.
+        let requests = self.url_requests.len();
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)))
             .unwrap_or_else(|_| Err(format!("{label} failed unexpectedly; the project was restored")));
         // A command that changed a streamed layer's features or fields (not by reading its
@@ -610,6 +612,9 @@ impl Session {
                 }
             }
             _ => {}
+        }
+        if res.is_err() {
+            self.url_requests.truncate(requests);
         }
         if let Err(e) = &res {
             self.notify(e.clone(), true);
