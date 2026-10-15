@@ -52,6 +52,9 @@ is a command, a thin egui front end, headless screenshots for UI work.
 
 ## Quality gates
 `cargo xtask ci` (fmt, clippy -D warnings, tests, layers) before every commit.
+Pull requests run CI on Linux only; pushes to `main` add macOS and Windows. Label a pull request
+`ci:macos`, `ci:windows` or `ci:full` to test there before merging (platform-specific code,
+paths, file dialogs).
 
 ## Looking at the app
 - `cargo run --release -p rustgis` (opens the World Atlas sample).
