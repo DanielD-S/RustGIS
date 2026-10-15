@@ -1589,7 +1589,7 @@ pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
             return add_cog(s, p, url);
         }
         // Downloaded by the app off the frame and added when it lands.
-        Ok(s.request_url(p))
+        s.request_url(p)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

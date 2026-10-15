@@ -490,17 +490,17 @@ impl Session {
 
     /// Keeps a `layer.addUrl` request for the front end to download off the frame and add when
     /// it lands (the browser, where a command may not wait): the command's answer, which says
-    /// so. An address asked for again while it waits is asked for once.
-    pub fn request_url(&mut self, p: &serde_json::Value) -> serde_json::Value {
+    /// so. An address asked for again while it waits is asked for once, and past a few waiting
+    /// requests the next is refused rather than silently dropping one already promised.
+    pub fn request_url(&mut self, p: &serde_json::Value) -> Result<serde_json::Value, String> {
         let url = p.get("url").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
         if !self.url_requests.iter().any(|q| q.get("url").and_then(serde_json::Value::as_str) == Some(url.as_str())) {
-            // A few at a time: past that many, the oldest are forgotten.
             if self.url_requests.len() >= MAX_URL_REQUESTS {
-                self.url_requests.remove(0);
+                return Err(format!("{url}: {MAX_URL_REQUESTS} downloads are already waiting; try again when they have landed"));
             }
             self.url_requests.push(p.clone());
         }
-        serde_json::json!({"pending": true, "url": url})
+        Ok(serde_json::json!({"pending": true, "url": url}))
     }
 
     /// The `layer.addUrl` requests waiting for the front end ([`Session::request_url`]), taken.
