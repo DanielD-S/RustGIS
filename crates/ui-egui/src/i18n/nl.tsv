@@ -1878,3 +1878,5 @@ Zoom To World	Zoomen naar wereld
 {url}: only HTTPS addresses, or plain HTTP on this computer or network, are allowed	{url}: alleen HTTPS-adressen, of gewoon HTTP op deze computer of dit netwerk, zijn toegestaan
 © OpenStreetMap contributors	© OpenStreetMap-bijdragers
 ⌘K	⌘K
+Opening {url}…	{url} openen…
+{url}: downloaded after another project was opened, so it wasn't opened	{url}: gedownload nadat een ander project was geopend, dus niet geopend

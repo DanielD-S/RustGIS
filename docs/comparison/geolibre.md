@@ -78,8 +78,8 @@ both.
 
 - **A native program, not a web view.** RustGIS is memory-safe Rust compiled to one native
   program (18–30 MB installers) with no browser engine, JavaScript or Python inside. Large
-  GeoPackage, GeoParquet and FlatGeobuf files are streamed a view at a time rather than loaded
-  into a browser tab's memory, and nothing depends on a web view's limits.
+  GeoPackage, GeoParquet, FlatGeobuf and Shapefile files are streamed a view at a time rather
+  than loaded into a browser tab's memory, and nothing depends on a web view's limits.
 - **Everything is a command.** Every ribbon button, shortcut and pane action is a command with an
   id and JSON parameters, and the same ids run from [`rustgis-cli`](../cli.md), the
   [`rustgis` Python package](../python.md), notebooks, models, the Script pane, the

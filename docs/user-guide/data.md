@@ -350,13 +350,19 @@ database is kept without its password. The commands `sources.list`, `sources.sav
 
 ## Large files
 
-GeoPackage, GeoParquet and FlatGeobuf files with more than 100,000 features are read in place
-rather than loaded whole, so files far larger than memory open in a moment. The layer reads the
-features in view, using the file's own spatial index (the GeoPackage R-tree, the FlatGeobuf
-packed R-tree, GeoParquet row-group bounding boxes), in the background as the map moves. When a
+GeoPackage, GeoParquet, FlatGeobuf and (on the desktop) Shapefile files with more than 100,000
+features are read in place rather than loaded whole, so files far larger than memory open in a
+moment. The layer reads the features in view, using the file's own spatial index (the GeoPackage
+R-tree, the FlatGeobuf packed R-tree, GeoParquet row-group bounding boxes; for a Shapefile, the
+shapes' bounding boxes, read once when it opens), in the background as the map moves. When a
 view holds more than 250,000 features (100,000 in the web app), the layer draws an evenly spread
 sample of them and its tooltip in Layers says so: zoom in to see them all. Smaller files load
 whole; `layer.addData` with `"stream": true` or `false` overrides the choice.
+
+On the desktop, a GeoJSON FeatureCollection larger than 32 MB is read the same way, with no size
+limit: opening reads the file once, keeping each feature's place in it and its bounding box (a
+file over 256 MB through a buffer, so it is never held whole), and each view parses just the
+features it shows. A single feature, a bare geometry or TopoJSON is loaded whole.
 
 A streamed layer works like any other for symbology, labels, pop-ups, selection and the
 attribute table (which lists the features read for the view). Geoprocessing tools read the whole
@@ -417,13 +423,15 @@ their coordinates (CF time units as dates, the `noleap` and `360_day` model cale
 a few at a time, in the background.
 
 Stores are read in pure Rust, in the web app as well as on the desktop: Zarr 2 with consolidated
-metadata (`.zmetadata`, as xarray writes) and Zarr 3 (`zarr.json`), chunks compressed with blosc
-(LZ4, zlib or zstd, byte-shuffled), zlib, gzip, zstd or LZ4, of integer or float values, in C or
-Fortran order. Fill values, `_FillValue` and `missing_value` are no data; `scale_factor` and
-`add_offset` are applied. The coordinates must be evenly spaced (a curvilinear grid isn't read);
+metadata (`.zmetadata`, as xarray writes) and Zarr 3 (`zarr.json`, sharded arrays too), chunks
+compressed with blosc (LZ4, zlib or zstd, byte- or bit-shuffled), zlib, gzip, zstd or LZ4, of
+integer or float values, in C or Fortran order. A sharded array's shards are fetched whole.
+`_FillValue`, `missing_value` and a Zarr 2 array's fill value are no data; a Zarr 3 array's fill
+value isn't: chunks never written are left empty, but chunks missing from inside a shard show the
+fill value. `scale_factor` and `add_offset` are applied. The coordinates must be evenly spaced (a curvilinear grid isn't read);
 longitude/latitude grids of 0–360° are turned to -180–180°, and projected ones take their
 coordinate system from the variable's grid mapping (`crs_wkt`, `spatial_ref`, an EPSG code) or
-`"crs"`. Sharded Zarr 3 arrays, bit-shuffled and blosclz-compressed chunks aren't read yet, and
+`"crs"`. Blosclz-compressed and transposed chunks and shards inside shards aren't read yet, and
 say so. A store by web address must allow the browser to fetch it (CORS) for the web app;
 Google Cloud's CMIP6 bucket does, ARCO-ERA5's doesn't (the desktop reads both).
 

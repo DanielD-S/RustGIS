@@ -1878,3 +1878,5 @@ Zoom To World	Dünyaya Yakınlaştır
 {url}: only HTTPS addresses, or plain HTTP on this computer or network, are allowed	{url}: yalnızca HTTPS adreslerine ya da bu bilgisayarda veya ağda düz HTTP'ye izin verilir
 © OpenStreetMap contributors	© OpenStreetMap katkıcıları
 ⌘K	⌘K
+Opening {url}…	{url} açılıyor…
+{url}: downloaded after another project was opened, so it wasn't opened	{url}: başka bir proje açıldıktan sonra indirildi, bu yüzden açılmadı

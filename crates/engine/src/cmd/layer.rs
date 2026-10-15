@@ -422,6 +422,32 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
     if rustgis_data::source::is_source_name(path) {
         return add_source(s, p, Origin::Path(path));
     }
+    // A large GeoJSON FeatureCollection (any, with `"stream": true`) is read in place, streamed
+    // when it holds many features; another GeoJSON document, or one that can't be read so, is
+    // read whole below.
+    #[cfg(not(target_arch = "wasm32"))]
+    if is_geojson(path)
+        && b(p, "stream").unwrap_or_else(|| {
+            std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > rustgis_data::source::geojson::IN_PLACE_ABOVE)
+        })
+    {
+        let name = Path::new(path).file_stem().and_then(|n| n.to_str()).unwrap_or("layer");
+        match rustgis_data::source::geojson::GeoJsonSource::open_path(Path::new(path), name) {
+            Ok(src) => return add_source_with(s, p, Origin::Path(path), Some(Box::new(src))),
+            // Not a FeatureCollection: read whole below.
+            Err(rustgis_data::DataError::Unsupported(_)) => {}
+            Err(e) => return Err(format!("{path}: {e}")),
+        }
+    }
+    // A large Shapefile is read in place, as a GeoPackage is; smaller ones are loaded whole.
+    #[cfg(not(target_arch = "wasm32"))]
+    if path.to_ascii_lowercase().ends_with(".shp")
+        && b(p, "stream").unwrap_or_else(|| {
+            rustgis_data::source::shp::record_count(Path::new(path)).is_some_and(|n| n > rustgis_map::source::STREAM_ABOVE)
+        })
+    {
+        return add_source(s, p, Origin::Path(path));
+    }
     // A PMTiles archive is a tile layer (raster or vector, as its header says).
     if path.to_ascii_lowercase().ends_with(".pmtiles") {
         if cfg!(target_arch = "wasm32") {
@@ -760,6 +786,13 @@ fn file_layers(_s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"count": 1, "layers": [name]}))
 }
 
+/// Whether a file name is GeoJSON's (`.geojson` or `.json`).
+#[cfg(not(target_arch = "wasm32"))]
+fn is_geojson(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".geojson") || lower.ends_with(".json")
+}
+
 /// Where a source file is: on disk, or uploaded (its name and bytes).
 pub(crate) enum Origin<'a> {
     Path(&'a str),
@@ -777,6 +810,16 @@ const MAX_SKIPPED_NAMED: usize = 100;
 /// sources (or any, with `"stream": true`) are streamed, read in place a view at a time; smaller
 /// ones are loaded whole, so they can be edited.
 pub(crate) fn add_source(s: &mut Session, p: &Value, origin: Origin<'_>) -> CmdResult {
+    add_source_with(s, p, origin, None)
+}
+
+/// [`add_source`], with the source already open (its one table).
+fn add_source_with(
+    s: &mut Session,
+    p: &Value,
+    origin: Origin<'_>,
+    mut opened: Option<Box<dyn rustgis_data::source::FeatureSource>>,
+) -> CmdResult {
     use rustgis_data::source;
     let label = match &origin {
         Origin::Path(p) | Origin::Bytes(p, _) => p.to_string(),
@@ -818,11 +861,14 @@ pub(crate) fn add_source(s: &mut Session, p: &Value, origin: Origin<'_>) -> CmdR
     let mut streamed = false;
     let mut features = 0u64;
     for table in tables {
-        let src = match &origin {
-            Origin::Path(path) => source::open_path(Path::new(path), table.as_deref()),
-            Origin::Bytes(name, bytes) => source::open_shared(name, bytes.clone(), table.as_deref()),
-        }
-        .map_err(err)?;
+        let src = match opened.take() {
+            Some(src) => src,
+            None => match &origin {
+                Origin::Path(path) => source::open_path(Path::new(path), table.as_deref()),
+                Origin::Bytes(name, bytes) => source::open_shared(name, bytes.clone(), table.as_deref()),
+            }
+            .map_err(err)?,
+        };
         let info = src.info().clone();
         // A point cloud is always read in place, so a project keeps its file's path, not millions
         // of points; its colours come from a sample of it.

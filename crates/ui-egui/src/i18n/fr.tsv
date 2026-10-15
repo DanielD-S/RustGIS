@@ -1878,3 +1878,5 @@ Zoom To World	Zoomer sur le monde
 {url}: only HTTPS addresses, or plain HTTP on this computer or network, are allowed	{url} : seules les adresses HTTPS, ou HTTP simple sur cet ordinateur ou ce réseau, sont autorisées
 © OpenStreetMap contributors	© OpenStreetMap contributors
 ⌘K	⌘K
+Opening {url}…	Ouverture de {url}…
+{url}: downloaded after another project was opened, so it wasn't opened	{url} : téléchargé après l’ouverture d’un autre projet, il n’a donc pas été ouvert

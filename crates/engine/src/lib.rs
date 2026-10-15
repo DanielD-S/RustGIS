@@ -473,6 +473,14 @@ impl Session {
         self.downloading.retain(|d| *d != id);
     }
 
+    /// Forgets a download the front end opens itself (a project by its address), saying whether
+    /// it still belongs to this project: `false` when another project was opened meanwhile.
+    pub fn download_done(&mut self, id: u64) -> bool {
+        let current = self.downloading.contains(&id);
+        self.download_failed(id);
+        current
+    }
+
     pub fn map(&self) -> &Map {
         self.project.map()
     }

@@ -81,13 +81,14 @@ pub fn start() {
                     let inbox: Inbox = Inbox::default();
                     let font_inbox: Inbox = Inbox::default();
                     let q = query();
+                    let project = params(&q, "project", 1).into_iter().next();
                     let mut app =
                         RustGisApp::with_sample().with_services(services(inbox.clone(), font_inbox, cc.egui_ctx.clone(), embedded));
                     // Settings › Start-up, unless `?blank`, `?projection=EPSG:3010` (a preset id,
                     // `mercator`, `globe`) or `?extent=minLon,minLat,maxLon,maxLat` says otherwise
                     // for this visit.
                     let start = rustgis_ui_egui::Start {
-                        blank: (embedded || flag(&q, "blank")).then_some(true),
+                        blank: (embedded || project.is_some() || flag(&q, "blank")).then_some(true),
                         projection: param(&q, "projection").filter(|c| !c.is_empty()),
                         extent: param(&q, "extent").filter(|c| !c.is_empty()),
                     };
@@ -101,11 +102,26 @@ pub fn start() {
                             None => log::warn!("?lang={code}: no such interface language; following the browser's"),
                         }
                     }
+                    // `?project=<url>` opens a project (`.rgis`) by its web address: a whole map,
+                    // its layers, symbology and view, shared as one link. It replaces the project
+                    // when it lands, so the links that add to a project are left out beside it.
+                    if let Some(url) = &project {
+                        if let Err(e) = app.run("ui.openUrl", serde_json::json!({"url": url})) {
+                            app.session.notify(format!("?project={url}: {e}"), true);
+                        }
+                        let skipped: Vec<&str> =
+                            ["data", "stac", "style", "tiles", "zarr"].into_iter().filter(|k| !params(&q, k, 1).is_empty()).collect();
+                        if !skipped.is_empty() {
+                            let list = skipped.iter().map(|k| format!("?{k}=")).collect::<Vec<_>>().join(", ");
+                            app.session.notify(format!("?project= opens a whole project, so {list} links were left out"), false);
+                        }
+                    }
+                    let links = if project.is_some() { "" } else { q.as_str() };
                     // `?data=<url>` (repeatable) adds data by web address, downloaded in the
                     // background, the map zoomed to the first file that lands with something to
                     // show; `?style=<url>` adds a MapLibre style; `?tiles=<template>` a tile
                     // layer. Links that share a map. What fails is said in a notice.
-                    for url in params(&q, "data", 16) {
+                    for url in params(links, "data", 16) {
                         if let Err(e) = app.run("ui.addUrl", serde_json::json!({"url": url, "zoom": true})) {
                             app.session.notify(format!("?data={url}: {e}"), true);
                         }
@@ -114,7 +130,7 @@ pub fn start() {
                     // Planetary Computer one) or a collection (STAC Search opens on it).
                     // One link: the dialog follows one document at a time, so others are said to
                     // be skipped rather than lost.
-                    let stac = params(&q, "stac", 4);
+                    let stac = params(links, "stac", 4);
                     if let Some(url) = stac.first()
                         && let Err(e) = app.run("ui.stacLink", serde_json::json!({"url": url}))
                     {
@@ -124,7 +140,7 @@ pub fn start() {
                         app.session.notify(format!("only the first ?stac= link is opened ({} more were left out)", stac.len() - 1), false);
                     }
                     for (key, kind) in [("style", Some("style")), ("tiles", None)] {
-                        for url in params(&q, key, 8) {
+                        for url in params(links, key, 8) {
                             let mut p = serde_json::json!({"url": url});
                             if let Some(kind) = kind {
                                 p["kind"] = serde_json::json!(kind);
@@ -136,7 +152,7 @@ pub fn start() {
                     }
                     // `?zarr=<url>` opens Add Zarr Variable on a store, its variables listed.
                     // Read as `?data=` is, so a `+` in the address stays a `+`.
-                    if let Some(url) = params(&q, "zarr", 1).into_iter().next()
+                    if let Some(url) = params(links, "zarr", 1).into_iter().next()
                         && let Err(e) = app.run("ui.addZarr", serde_json::json!({"address": url}))
                     {
                         app.session.notify(format!("?zarr={url}: {e}"), true);

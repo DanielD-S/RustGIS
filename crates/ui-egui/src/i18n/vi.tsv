@@ -1878,3 +1878,5 @@ Zoom To World	Thu phóng tới thế giới
 {url}: only HTTPS addresses, or plain HTTP on this computer or network, are allowed	{url}: chỉ cho phép địa chỉ HTTPS, hoặc HTTP thường trên máy tính hay mạng này
 © OpenStreetMap contributors	© Những người đóng góp OpenStreetMap
 ⌘K	⌘K
+Opening {url}…	Đang mở {url}…
+{url}: downloaded after another project was opened, so it wasn't opened	{url}: đã tải xuống sau khi một dự án khác được mở, nên không được mở

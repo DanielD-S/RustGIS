@@ -115,6 +115,14 @@ added is said in a notice. For example,
 `?blank&data=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_week.geojson` opens
 the past week's earthquakes.
 
+`?project=<address>` opens a whole project by its web address: a `.rgis` file (or a
+`.rgispkg` package), or any address that answers with a project's JSON, such as an API that
+builds the project on the fly. Its maps, layers, symbology and view open as saved, so one link
+shares a styled map. The project replaces the start-up one, so `?data=`, `?stac=`, `?style=`,
+`?tiles=` and `?zarr=` are left out beside it (a notice says so). The data the project points to
+is read as it would be from a saved file, and its servers must allow the browser to fetch it
+(CORS), as must the project's.
+
 `?stac=<address>` opens STAC Search on a [STAC](https://stacspec.org) item or collection: an
 item's footprint is drawn and its default asset (its true-colour `visual` image, else its first
 GeoTIFF) added, signed first when it is a Microsoft Planetary Computer one; a collection is chosen
