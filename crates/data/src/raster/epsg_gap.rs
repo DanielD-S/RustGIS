@@ -18,7 +18,9 @@
 //! (VN-2000, the Argentine and Austrian datums …). EPSG:9311 (NAD27 / US National Atlas Equal
 //! Area) has none: its `+datum=NAD27` stands for grid files proj4rs can't load, and a Helmert
 //! with its `+R_A` sphere goes kilometres wrong in proj4rs, so NAD27 is taken as WGS 84 there,
-//! tens of metres off, as it is for its predecessor EPSG:2163 in crs-definitions.
+//! tens of metres off, as it is for its predecessor EPSG:2163 in crs-definitions. The Saba and
+//! Sint Eustatius Helmerts PROJ marks `+exact` (rotations of hundreds of arc-seconds); in the
+//! small-angle form `+towgs84` carries they come out 2–8 m off.
 
 /// The PROJ definition of an EPSG code in the gap, or `None`.
 pub fn proj4(code: u16) -> Option<&'static str> {
@@ -97,7 +99,7 @@ pub(crate) const DEFS: &[(u16, &str)] = &[
     (9299, "+proj=longlat +ellps=GRS80 +no_defs"), // HS2-IRF
     (9300, "+proj=tmerc +lat_0=52.3 +lon_0=-1.5 +k=1 +x_0=198873.0046 +y_0=375064.3871 +ellps=GRS80 +units=m +no_defs"), // HS2 Survey Grid
     (9309, "+proj=longlat +ellps=GRS80 +no_defs"), // ATRF2014
-    (9311, "+proj=laea +R_A +lat_0=45 +lon_0=-100 +x_0=0 +y_0=0 +ellps=clrk66 +units=m +no_defs"), // NAD27 / US National Atlas Equal Area
+    (9311, "+proj=laea +R_A +lat_0=45 +lon_0=-100 +x_0=0 +y_0=0 +ellps=clrk66 +units=m +no_defs"), // NAD27 / US National Atlas Equal Area (no datum shift: tens of metres off, see above)
     (9333, "+proj=longlat +ellps=GRS80 +towgs84=0,0,0,-0.008393,0.000749,-0.010276,0 +no_defs"), // KSA-GRF17
     (9354, "+proj=stere +lat_0=-90 +lat_ts=-65 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"), // WGS 84 / IBCSO Polar Stereographic
     (9356, "+proj=utm +zone=36 +ellps=GRS80 +towgs84=0,0,0,-0.008393,0.000749,-0.010276,0 +units=m +no_defs"), // KSA-GRF17 / UTM zone 36N
@@ -333,9 +335,9 @@ pub(crate) const DEFS: &[(u16, &str)] = &[
     (10626, "+proj=tmerc +lat_0=53.8 +lon_0=-1.6 +k=1 +x_0=108021.121 +y_0=263196.8721 +ellps=GRS80 +units=m +no_defs"), // ECML14 Grid
     (10628, "+proj=longlat +ellps=GRS80 +no_defs"), // WC05-IRF
     (10632, "+proj=tmerc +lat_0=53.45 +lon_0=-2.15 +k=1 +x_0=209900.2337 +y_0=401958.2494 +ellps=GRS80 +units=m +no_defs"), // WC05 Grid
-    (10636, "+proj=longlat +ellps=intl +towgs84=1138.7432,-2064.4761,110.7016,214.615206,-479.360036,164.703951,-402.32073 +no_defs"), // Saba
+    (10636, "+proj=longlat +ellps=intl +towgs84=1138.7432,-2064.4761,110.7016,214.615206,-479.360036,164.703951,-402.32073 +no_defs"), // Saba (Helmert is +exact in PROJ: 2–8 m off here)
     (10639, "+proj=longlat +ellps=GRS80 +no_defs"), // BES2020 Saba
-    (10641, "+proj=tmerc +lat_0=0 +lon_0=-63 +k=0.9996 +x_0=29973.97 +y_0=-1947925.94 +ellps=intl +towgs84=1138.7432,-2064.4761,110.7016,214.615206,-479.360036,164.703951,-402.32073 +units=m +no_defs"), // Saba DPnet
+    (10641, "+proj=tmerc +lat_0=0 +lon_0=-63 +k=0.9996 +x_0=29973.97 +y_0=-1947925.94 +ellps=intl +towgs84=1138.7432,-2064.4761,110.7016,214.615206,-479.360036,164.703951,-402.32073 +units=m +no_defs"), // Saba DPnet (Helmert is +exact in PROJ: 2–8 m off here)
     (10665, "+proj=tmerc +lat_0=0 +lon_0=-51 +k=0.999995 +x_0=300000 +y_0=5000000 +ellps=GRS80 +units=m +no_defs"), // SIRGAS 2000 / Porto Alegre TM
     (10671, "+proj=longlat +ellps=GRS80 +no_defs"), // RGM23
     (10673, "+proj=longlat +ellps=GRS80 +no_defs"), // RGM23 (lon-lat)
@@ -351,10 +353,10 @@ pub(crate) const DEFS: &[(u16, &str)] = &[
     (10731, "+proj=utm +zone=31 +ellps=GRS80 +units=m +no_defs"), // ETRS89/DREF91/2016 / UTM zone 31N
     (10732, "+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs"), // ETRS89/DREF91/2016 / UTM zone 32N
     (10733, "+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs"), // ETRS89/DREF91/2016 / UTM zone 33N
-    (10736, "+proj=longlat +ellps=intl +towgs84=1276.2485,-2016.6406,667.4403,101.005288,-212.913401,68.43277,-431.59604 +no_defs"), // Sint Eustatius
+    (10736, "+proj=longlat +ellps=intl +towgs84=1276.2485,-2016.6406,667.4403,101.005288,-212.913401,68.43277,-431.59604 +no_defs"), // Sint Eustatius (Helmert is +exact in PROJ: 2–8 m off here)
     (10739, "+proj=longlat +ellps=GRS80 +no_defs"), // BES2020 Sint Eustatius
-    (10744, "+proj=tmerc +lat_0=0 +lon_0=-63 +k=0.9996 +x_0=578.55 +y_0=-1930396.26 +ellps=intl +towgs84=1276.2485,-2016.6406,667.4403,101.005288,-212.913401,68.43277,-431.59604 +units=m +no_defs"), // Sint Eustatius DPnet short
-    (10745, "+proj=utm +zone=20 +ellps=intl +towgs84=1276.2485,-2016.6406,667.4403,101.005288,-212.913401,68.43277,-431.59604 +units=m +no_defs"), // Sint Eustatius DPnet long
+    (10744, "+proj=tmerc +lat_0=0 +lon_0=-63 +k=0.9996 +x_0=578.55 +y_0=-1930396.26 +ellps=intl +towgs84=1276.2485,-2016.6406,667.4403,101.005288,-212.913401,68.43277,-431.59604 +units=m +no_defs"), // Sint Eustatius DPnet short (Helmert is +exact in PROJ: 2–8 m off here)
+    (10745, "+proj=utm +zone=20 +ellps=intl +towgs84=1276.2485,-2016.6406,667.4403,101.005288,-212.913401,68.43277,-431.59604 +units=m +no_defs"), // Sint Eustatius DPnet long (Helmert is +exact in PROJ: 2–8 m off here)
     (10758, "+proj=longlat +ellps=intl +towgs84=-366.1939,-115.0688,-776.7039,-20.96308,-16.462749,14.276379,-12.809 +no_defs"), // Bonaire
     (10759, "+proj=tmerc +lat_0=12.180658675 +lon_0=-68.2518022805556 +k=1 +x_0=23209.56 +y_0=21423.99 +ellps=intl +towgs84=-366.1939,-115.0688,-776.7039,-20.96308,-16.462749,14.276379,-12.809 +units=m +no_defs"), // Bonaire DPnet
     (10762, "+proj=longlat +ellps=GRS80 +no_defs"), // Bonaire 2004
