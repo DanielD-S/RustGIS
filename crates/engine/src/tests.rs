@@ -3250,6 +3250,28 @@ fn data_from_a_web_address() {
     assert_eq!(crate::cmd::layer::url_file_name("https://x.org/q.json", b"[]").unwrap(), "q.geojson");
 }
 
+/// Where a command may not download itself (the browser), `layer.addUrl` leaves its request for
+/// the front end: once per address, a few at a time, and taken once.
+#[test]
+fn url_requests_wait_for_the_front_end() {
+    let mut s = Session::new(Project::default());
+    let p = json!({"url": "https://x.org/a.geojson", "name": "A", "zoom": true});
+    assert_eq!(s.request_url(&p), json!({"pending": true, "url": "https://x.org/a.geojson"}));
+    s.request_url(&p);
+    s.request_url(&json!({"url": "https://x.org/b.geojson"}));
+    let taken = s.take_url_requests();
+    assert_eq!(taken.len(), 2, "the same address once");
+    assert_eq!((taken[0]["name"].as_str(), taken[0]["zoom"].as_bool()), (Some("A"), Some(true)));
+    assert_eq!(taken[1]["url"], "https://x.org/b.geojson");
+    assert!(s.take_url_requests().is_empty());
+    for i in 0..40 {
+        s.request_url(&json!({"url": format!("https://x.org/{i}")}));
+    }
+    let taken = s.take_url_requests();
+    assert_eq!(taken.len(), 16, "a few at a time");
+    assert_eq!(taken[0]["url"], "https://x.org/24", "the oldest are forgotten");
+}
+
 /// The app's downloads land in the project they were started for, as bytes (no base64); one
 /// whose project was closed meanwhile is dropped.
 #[test]

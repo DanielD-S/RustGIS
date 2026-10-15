@@ -327,11 +327,17 @@ pub struct Session {
     downloading: Vec<u64>,
     /// Downloads that landed, waiting for `layer.addDownload`.
     pub(crate) downloaded: Vec<(u64, Vec<u8>)>,
+    /// Downloads a command asked for where nothing may wait (the browser): the parameters of
+    /// `layer.addUrl` calls, for the front end to fetch and add (see [`Session::take_url_requests`]).
+    pub(crate) url_requests: Vec<serde_json::Value>,
     /// Query results the app ran off the frame (the SQL pane), waiting for `layer.addSql {"ran"}`:
     /// the id, the query and database (label) they came from, and the result.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) sql_results: Vec<(u64, String, Option<String>, rustgis_data::source::duckdb::Output)>,
 }
+
+/// The most `layer.addUrl` requests kept for the front end at a time.
+const MAX_URL_REQUESTS: usize = 16;
 
 /// A finished tool run, held until `gp.finish` applies it.
 pub(crate) struct PendingRun {
@@ -427,6 +433,7 @@ impl Session {
             started: Vec::new(),
             downloading: Vec::new(),
             downloaded: Vec::new(),
+            url_requests: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             sql_results: Vec::new(),
         }
@@ -479,6 +486,26 @@ impl Session {
         let current = self.downloading.contains(&id);
         self.download_failed(id);
         current
+    }
+
+    /// Keeps a `layer.addUrl` request for the front end to download off the frame and add when
+    /// it lands (the browser, where a command may not wait): the command's answer, which says
+    /// so. An address asked for again while it waits is asked for once.
+    pub fn request_url(&mut self, p: &serde_json::Value) -> serde_json::Value {
+        let url = p.get("url").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        if !self.url_requests.iter().any(|q| q.get("url").and_then(serde_json::Value::as_str) == Some(url.as_str())) {
+            // A few at a time: past that many, the oldest are forgotten.
+            if self.url_requests.len() >= MAX_URL_REQUESTS {
+                self.url_requests.remove(0);
+            }
+            self.url_requests.push(p.clone());
+        }
+        serde_json::json!({"pending": true, "url": url})
+    }
+
+    /// The `layer.addUrl` requests waiting for the front end ([`Session::request_url`]), taken.
+    pub fn take_url_requests(&mut self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.url_requests)
     }
 
     pub fn map(&self) -> &Map {
@@ -636,6 +663,7 @@ impl Session {
         self.started.clear();
         self.downloading.clear();
         self.downloaded.clear();
+        self.url_requests.clear();
         #[cfg(not(target_arch = "wasm32"))]
         self.sql_results.clear();
     }

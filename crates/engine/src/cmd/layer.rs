@@ -1546,7 +1546,9 @@ pub fn url_file_name(url: &str, bytes: &[u8]) -> Result<String, String> {
 }
 
 /// Downloads data from a web address and adds it (the command line, MCP and the assistant; the
-/// app downloads off the frame and adds the bytes).
+/// app downloads off the frame and adds the bytes). In the browser, where nothing may wait, the
+/// request is kept for the app ([`Session::request_url`]), which downloads and adds it as its own
+/// Add Data › From URL does, so a plugin, a script or the assistant can add data by address too.
 pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
     let url = ps(p, "url").map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
     let lower = url.to_ascii_lowercase();
@@ -1586,7 +1588,8 @@ pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
         if tiff && !super::b(p, "whole").unwrap_or(false) {
             return add_cog(s, p, url);
         }
-        Err(format!("{url}: in the web app, use Home › Add Data › From URL"))
+        // Downloaded by the app off the frame and added when it lands.
+        Ok(s.request_url(p))
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

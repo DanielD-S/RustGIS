@@ -2044,6 +2044,13 @@ impl RustGisApp {
         rustgis_engine::plugins::set_language(self.lang().code());
         panes::poll_geolibre(self, ctx);
         self.poll_downloads();
+        // Addresses commands asked for where they couldn't download themselves (the browser):
+        // fetched off the frame and added when they land, as Add Data › From URL does.
+        for p in self.session.take_url_requests() {
+            if let Err(e) = self.run("ui.addUrl", p) {
+                self.session.notify(e, true);
+            }
+        }
         sqlpane::poll(self, ctx);
         self.poll_service();
         // Sources the AI Assistant or a background add brought in (not through `run`) are kept
