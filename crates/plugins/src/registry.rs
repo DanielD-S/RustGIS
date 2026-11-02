@@ -256,3 +256,55 @@ pub fn fetch_with_progress(
     }
     Ok(buf)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod fetch_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    /// Serves `body` once on this computer, as an HTTP answer that gives its length.
+    fn serve(body: Vec<u8>) -> std::io::Result<String> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut request = [0u8; 4096];
+                let _ = s.read(&mut request);
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(&body);
+            }
+        });
+        Ok(format!("http://127.0.0.1:{port}/installer.exe"))
+    }
+
+    #[test]
+    fn a_download_reports_its_progress() {
+        let url = serve(vec![7u8; 300_000]).unwrap();
+        let mut seen = Vec::new();
+        let got = fetch_with_progress(&url, 1 << 20, Duration::from_secs(30), &mut |done, total| {
+            seen.push((done, total));
+            true
+        })
+        .unwrap();
+        assert_eq!(got.len(), 300_000);
+        // Piece by piece, always more, ending with all of it and the size the server gave.
+        assert!(seen.len() > 1 && seen.windows(2).all(|w| w[0].0 < w[1].0), "{seen:?}");
+        assert_eq!(seen.last(), Some(&(300_000, Some(300_000))));
+    }
+
+    #[test]
+    fn a_download_stops_when_cancelled() {
+        let url = serve(vec![7u8; 300_000]).unwrap();
+        let err = fetch_with_progress(&url, 1 << 20, Duration::from_secs(30), &mut |_, _| false).unwrap_err();
+        assert!(err.ends_with("cancelled"), "{err}");
+    }
+
+    #[test]
+    fn a_download_over_its_limit_is_refused() {
+        let url = serve(vec![7u8; 300_000]).unwrap();
+        let err = fetch_with_progress(&url, 100_000, Duration::from_secs(30), &mut |_, _| true).unwrap_err();
+        assert!(err.contains("is larger than"), "{err}");
+    }
+}

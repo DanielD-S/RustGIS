@@ -43,15 +43,24 @@ enum Install {
     Downloading {
         version: String,
         progress: install::Progress,
-        slot: Slot<Result<std::path::PathBuf, String>>,
+        slot: Slot<Result<install::Saved, String>>,
     },
     /// Checked and saved: it runs when RustGIS closes, once the user has said so (`at_exit`).
     Ready {
         version: String,
-        path: std::path::PathBuf,
+        saved: install::Saved,
         at_exit: bool,
     },
     Failed(String),
+}
+
+/// The installer the desktop app runs as it closes: the program, its switches, and the
+/// `/D=<folder>` NSIS takes last and unquoted (pass it raw).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct PendingInstall {
+    pub installer: std::path::PathBuf,
+    pub args: Vec<&'static str>,
+    pub folder: std::ffi::OsString,
 }
 
 impl UpdateState {
@@ -62,14 +71,36 @@ impl UpdateState {
         self.result = None;
     }
 
-    /// The installer to run as RustGIS closes, and the folder it installs into: set once the user
-    /// chose Install and Restart. The desktop app runs it from its exit (`apps/rustgis`).
+    /// The installer to run as RustGIS closes: set once the user chose Install and Restart. The
+    /// desktop app runs it from its exit (`apps/rustgis`).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn installer_at_exit(&self) -> Option<(std::path::PathBuf, Vec<&'static str>, String)> {
-        let Install::Ready { path, at_exit: true, .. } = &self.install else { return None };
-        let (args, dir) = install::installer_args(&install::setup_install()?);
-        Some((path.clone(), args, dir))
+    pub fn installer_at_exit(&self) -> Option<PendingInstall> {
+        let Install::Ready { saved, at_exit: true, .. } = &self.install else { return None };
+        let (args, folder) = install::installer_args(&install::setup_install()?);
+        Some(PendingInstall { installer: saved.path.clone(), args, folder })
     }
+}
+
+/// At start, what the last Install and Restart did, as a notice and whether it is an error:
+/// RustGIS was updated, or the update didn't arrive (asked once; nothing could say so as RustGIS
+/// closed). `None` when nothing was installed.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn last_install_notice() -> Option<(String, bool)> {
+    Some(match install::last_install(env!("CARGO_PKG_VERSION"))? {
+        Ok(v) => (crate::i18n::fmt("RustGIS was updated to {version}.", &[("version", &v)]), false),
+        Err(v) => (
+            crate::i18n::fmt(
+                "RustGIS {version} wasn't installed: try again from Help › Check for Updates, or install it from the release page.",
+                &[("version", &v)],
+            ),
+            true,
+        ),
+    })
+}
+
+/// Whether `a` and `b` name the same version (`v0.6.0` and `0.6.0`).
+fn version_eq(a: &str, b: &str) -> bool {
+    version(a).is_some() && !is_newer(a, b) && !is_newer(b, a)
 }
 
 /// A file published with a release.
@@ -84,8 +115,11 @@ pub struct Asset {
 pub struct Release {
     pub version: String,
     pub url: String,
-    /// The release notes, as written (Markdown), cut to [`MAX_NOTES`].
+    /// The release notes as plain text (see [`plain_notes`]), at most [`MAX_NOTES`] characters
+    /// of them.
     pub notes: String,
+    /// Whether the notes were cut: the window says the rest is on the release page.
+    pub notes_cut: bool,
     /// Its files with an address RustGIS downloads from: HTTPS, or HTTP to this computer.
     pub assets: Vec<Asset>,
 }
@@ -101,9 +135,10 @@ pub fn parse_release(body: &[u8]) -> Result<Release, String> {
     }
     let url = v.get("html_url").and_then(Value::as_str).filter(|u| u.starts_with("https://")).unwrap_or(RELEASES);
     let body = v.get("body").and_then(Value::as_str).unwrap_or_default().trim();
-    let notes = match body.char_indices().nth(MAX_NOTES) {
-        Some((cut, _)) => format!("{}…", body.get(..cut).unwrap_or_default()),
-        None => body.to_string(),
+    // Made plain once here, not each frame the window draws.
+    let (notes, notes_cut) = match body.char_indices().nth(MAX_NOTES) {
+        Some((cut, _)) => (format!("{}…", plain_notes(body.get(..cut).unwrap_or_default())), true),
+        None => (plain_notes(body), false),
     };
     let assets = v
         .get("assets")
@@ -118,11 +153,11 @@ pub fn parse_release(body: &[u8]) -> Result<Release, String> {
             Some(Asset { name: name.to_string(), url: url.to_string() })
         })
         .collect();
-    Ok(Release { version: tag.trim_start_matches(['v', 'V']).to_string(), url: url.to_string(), notes, assets })
+    Ok(Release { version: tag.trim_start_matches(['v', 'V']).to_string(), url: url.to_string(), notes, notes_cut, assets })
 }
 
 /// Release notes as plain text, for a label: headings without their `#`, list items with a
-/// bullet, links as their text, and no emphasis or code marks.
+/// bullet, links and images as their text, and no bold or code marks (`__` stays: `__init__`).
 fn plain_notes(markdown: &str) -> String {
     let mut out = Vec::new();
     for line in markdown.lines() {
@@ -148,6 +183,10 @@ fn plain_notes(markdown: &str) -> String {
                 .and_then(|mid| after.get(mid..)?.find(')').map(|close| (mid, mid + close)));
             match link {
                 Some((mid, close)) => {
+                    // An image, `![alt](src)`, reads as its alt text too.
+                    if text.ends_with('!') {
+                        text.pop();
+                    }
                     text.push_str(after.get(1..mid).unwrap_or_default());
                     rest = after.get(close + 1..).unwrap_or_default();
                 }
@@ -158,22 +197,32 @@ fn plain_notes(markdown: &str) -> String {
             }
         }
         text.push_str(rest);
-        out.push(text.replace("**", "").replace("__", "").replace('`', ""));
+        out.push(text.replace("**", "").replace('`', ""));
     }
     out.join("\n")
 }
 
 /// Where the check asks for the latest release: GitHub's API, or, to try an update against a
-/// release served on this computer, the release JSON `RUSTGIS_UPDATE_RELEASE` names (HTTPS, or
-/// HTTP to this computer, as every download here).
+/// release served on this computer, the release JSON `RUSTGIS_UPDATE_RELEASE` names. Only a
+/// local address (`http://127.0.0.1:…`, `http://localhost:…`): a testing aid, which can't send
+/// the check, and the installer it names, anywhere else.
 fn latest_url() -> String {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(url) = std::env::var("RUSTGIS_UPDATE_RELEASE")
-        && !url.trim().is_empty()
-    {
-        return url.trim().to_string();
+    if let Ok(url) = std::env::var("RUSTGIS_UPDATE_RELEASE") {
+        let url = url.trim();
+        if local_release(url) {
+            return url.to_string();
+        }
+        if !url.is_empty() {
+            log::warn!("RUSTGIS_UPDATE_RELEASE={url} is ignored: only a release served on this computer (http://127.0.0.1) is");
+        }
     }
     LATEST.to_string()
+}
+
+/// Whether `url` is plain HTTP to this computer, as `RUSTGIS_UPDATE_RELEASE` must be.
+fn local_release(url: &str) -> bool {
+    !url.starts_with("https://") && rustgis_engine::plugins::registry::allowed_url(url)
 }
 
 /// A pre-release identifier: numbers sort numerically and before words (`beta.2` < `beta.10`,
@@ -262,7 +311,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         && let Some(r) = slot.lock().ok().and_then(|mut s| s.take())
     {
         app.update.install = match r {
-            Ok(path) => Install::Ready { version: version.clone(), path, at_exit: false },
+            Ok(saved) => Install::Ready { version: version.clone(), saved, at_exit: false },
             Err(e) => Install::Failed(e),
         };
     }
@@ -300,14 +349,18 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         ui.label(egui::RichText::new(tl!("What's new")).strong());
                         egui::Frame::group(ui.style()).show(ui, |ui| {
                             egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
-                                ui.label(egui::RichText::new(plain_notes(&r.notes)).small());
+                                ui.label(egui::RichText::new(&r.notes).small());
                             });
                         });
+                        if r.notes_cut {
+                            ui.label(egui::RichText::new(tl!("The notes are cut here: the release page has all of them.")).small().weak());
+                        }
                     }
                     ui.add_space(6.0);
                     #[cfg(not(target_arch = "wasm32"))]
                     {
-                        let assets = install::setup_install().and(install::assets_for(r, std::env::consts::ARCH));
+                        let setup = install::setup_install().is_some();
+                        let assets = if setup { install::assets_for(r, std::env::consts::ARCH) } else { None };
                         let stage = match &app.update.install {
                             // A download of another release (an older check) doesn't count.
                             Install::Downloading { version, .. } | Install::Ready { version, .. } if *version != r.version => {
@@ -379,11 +432,14 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                                 });
                             }
                             (_, None) => {
-                                ui.label(
-                                    egui::RichText::new(tl!("Installed with Homebrew, winget, the AUR or COPR? Update it there."))
-                                        .small()
-                                        .weak(),
-                                );
+                                // An install this window can update, from a release without its
+                                // installer or checksums: the release page has what there is.
+                                let note = if setup {
+                                    tl!("This release has no installer for this computer: get it from the release page.")
+                                } else {
+                                    tl!("Installed with Homebrew, winget, the AUR or COPR? Update it there.")
+                                };
+                                ui.label(egui::RichText::new(note).small().weak());
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {
                                     if ui.button(tl!("Open the Release Page")).clicked() {
@@ -433,11 +489,18 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         }
         // The usual way out: a project with unsaved changes asks first (Cancel keeps RustGIS
         // open, and the update waits for it to close).
+        // Checked again first, and the version noted for the next start: once RustGIS has closed
+        // nothing can say that the update didn't happen.
         Some(Action::InstallNow) => {
-            if let Install::Ready { at_exit, .. } = &mut app.update.install {
-                *at_exit = true;
+            if let Install::Ready { version, saved, at_exit } = &mut app.update.install {
+                match install::still_checked(&saved.path, &saved.sha256).and_then(|()| install::note_pending(version)) {
+                    Ok(()) => {
+                        *at_exit = true;
+                        app.quit_requested = true;
+                    }
+                    Err(e) => app.update.install = Install::Failed(e),
+                }
             }
-            app.quit_requested = true;
         }
         None => {}
     }
@@ -506,7 +569,9 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        assert_eq!(r.notes, "## Highlights\n- Faster maps");
+        // Plain text, made once.
+        assert_eq!(r.notes, "Highlights\n• Faster maps");
+        assert!(!r.notes_cut);
         // Only files with a name and an address RustGIS downloads from: HTTPS, or HTTP to this
         // computer (a release served there to try an update), not plain HTTP elsewhere.
         assert_eq!(r.assets.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["SHA256SUMS", "local.exe"]);
@@ -515,9 +580,26 @@ mod tests {
         assert!(r.notes.is_empty() && r.assets.is_empty());
         // Long notes are cut, on a character.
         let long = format!(r#"{{"tag_name":"v0.6.0","body":"{}"}}"#, "é".repeat(MAX_NOTES + 10));
-        let notes = parse_release(long.as_bytes()).unwrap().notes;
-        assert_eq!(notes.chars().count(), MAX_NOTES + 1);
-        assert!(notes.ends_with('…'));
+        let r = parse_release(long.as_bytes()).unwrap();
+        assert_eq!(r.notes.chars().count(), MAX_NOTES + 1);
+        assert!(r.notes.ends_with('…') && r.notes_cut);
+    }
+
+    #[test]
+    fn only_a_release_on_this_computer_replaces_github_for_testing() {
+        assert!(local_release("http://127.0.0.1:8765/release.json"));
+        assert!(local_release("http://localhost:8765/release.json"));
+        // Elsewhere, HTTPS included: the check goes to GitHub as usual.
+        assert!(!local_release("https://example.com/release.json"));
+        assert!(!local_release("http://example.com/release.json"));
+        assert!(!local_release("http://localhost.example.com/release.json"));
+        assert!(!local_release(""));
+    }
+
+    #[test]
+    fn versions_are_the_same_with_or_without_their_v() {
+        assert!(version_eq("v0.6.0", "0.6.0") && version_eq("0.6", "0.6.0"));
+        assert!(!version_eq("0.6.0", "0.5.0") && !version_eq("0.6.0-rc.1", "0.6.0") && !version_eq("junk", "junk"));
     }
 
     #[test]
@@ -530,5 +612,7 @@ mod tests {
         );
         assert_eq!(plain_notes("[unclosed](https://x"), "[unclosed](https://x");
         assert_eq!(plain_notes(""), "");
+        // An image reads as its alt text; `__` stays (a name such as `__init__`).
+        assert_eq!(plain_notes("See ![the new window](https://x/shot.webp) and __init__."), "See the new window and __init__.");
     }
 }

@@ -431,14 +431,17 @@ fn backends(flag: Option<&str>, env: Option<&str>, windows: bool) -> wgpu::Backe
 /// Help › Check for Updates › Install and Restart: the downloaded, checked installer runs as
 /// RustGIS closes, silently, and opens RustGIS again when done (#1290). It waits for this
 /// process to end before replacing its files (`packaging/windows/rustgis.nsi`).
+///
+/// Nothing can be shown here, as RustGIS closes: the next start says whether the update arrived
+/// (`rustgis_ui_egui::last_install_notice`), a failure to run the installer included.
 #[cfg(windows)]
 fn run_installer(app: &RustGisApp) {
     use std::os::windows::process::CommandExt;
-    let Some((installer, args, dir)) = app.update.installer_at_exit() else { return };
+    let Some(i) = app.update.installer_at_exit() else { return };
     // NSIS reads `/D=` last and unquoted, spaces and all: raw, not quoted as an argument.
-    match std::process::Command::new(&installer).args(args).raw_arg(&dir).spawn() {
-        Ok(_) => log::info!("running {} to update RustGIS", installer.display()),
-        Err(e) => log::warn!("could not run the installer {} ({e}): RustGIS stays as it is", installer.display()),
+    match std::process::Command::new(&i.installer).args(&i.args).raw_arg(&i.folder).spawn() {
+        Ok(_) => log::info!("running {} to update RustGIS", i.installer.display()),
+        Err(e) => log::warn!("could not run the installer {} ({e}): RustGIS stays as it is", i.installer.display()),
     }
 }
 
@@ -517,6 +520,13 @@ fn main() -> eframe::Result {
     for e in plugin_errors {
         log::warn!("{e}");
         app.session.notify(e, true);
+    }
+    // Help › Check for Updates' Install and Restart, last time: did the update arrive?
+    if let Some((text, error)) = {
+        rustgis_ui_egui::i18n::set_current(app.chosen_lang());
+        rustgis_ui_egui::last_install_notice()
+    } {
+        app.session.notify(text, error);
     }
     for e in open_files(&mut app, &files) {
         eprintln!("rustgis: {e}");

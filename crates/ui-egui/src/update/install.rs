@@ -3,9 +3,10 @@
 //! RustGIS closes; it installs over this copy and opens it again. Native only: none of it is in
 //! the web app, which always runs the latest release.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use sha2::{Digest, Sha256};
 
@@ -18,6 +19,8 @@ const MAX_INSTALLER: usize = 512 * 1024 * 1024;
 const MAX_SUMS: usize = 1024 * 1024;
 /// Time for the whole download, on a slow connection.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// The note Install and Restart leaves in the `updates` folder for the next start.
+const PENDING: &str = "installing.txt";
 
 /// The name of this computer's installer in a release: `RustGIS-<version>-windows-<arch>-setup.exe`.
 pub(crate) fn installer_name(version: &str, arch: &str) -> String {
@@ -42,29 +45,40 @@ pub(crate) fn sum_for(sums: &str, name: &str) -> Option<String> {
     })
 }
 
+/// The SHA-256 of `bytes`, in lower-case hex.
+fn sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Every check an installer passes before it may run, in one place. Today: its SHA-256 is the
-/// one the release's `SHA256SUMS` gives for it, which catches a corrupt or cut download. A
-/// signature check joins here once Windows builds are signed: the installer's Authenticode
-/// signature, from the expected publisher by name, not any valid signature.
+/// one the release's `SHA256SUMS` gives for it, which catches a corrupt or cut download (not a
+/// replaced release: the list comes from the same place). A signature check joins here once
+/// Windows builds are signed: the installer's Authenticode signature, from the expected
+/// publisher by name, not any valid signature.
 pub(crate) fn verify(installer: &[u8], name: &str, sums: &str) -> Result<(), String> {
     let expected = sum_for(sums, name).ok_or_else(|| crate::i18n::fmt("The release's checksums don't list {name}.", &[("name", name)]))?;
-    let got: String = Sha256::digest(installer).iter().map(|b| format!("{b:02x}")).collect();
-    if got != expected {
+    if sha256(installer) != expected {
         return Err(crate::i18n::fmt("{name} doesn't match the release's checksum: the download is damaged.", &[("name", name)]));
     }
     Ok(())
 }
 
 /// The folder RustGIS was installed in by `setup.exe`, which Download and Install can update:
-/// the one holding this program beside the installer's `uninstall.exe`. `None` for the other
-/// ways of installing it (the MSI, the Store, winget, the portable zip), which update their own
-/// way, and on other systems.
+/// the one holding this program beside the installer's `uninstall.exe`. winget installs with the
+/// same `setup.exe`, so its installs count too (winget then reads the new version from Apps &
+/// features). `None` for the MSI, the Store and the portable zip, which update their own way, and
+/// on other systems. Worked out once: the window asks for it every frame.
 pub(crate) fn setup_install() -> Option<PathBuf> {
-    if !cfg!(windows) {
-        return None;
-    }
-    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    setup_install_in(&dir).then_some(dir)
+    static SETUP: OnceLock<Option<PathBuf>> = OnceLock::new();
+    SETUP
+        .get_or_init(|| {
+            if !cfg!(windows) {
+                return None;
+            }
+            let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+            setup_install_in(&dir).then_some(dir)
+        })
+        .clone()
 }
 
 /// Whether `dir` holds an install made by `setup.exe`.
@@ -74,9 +88,63 @@ pub(crate) fn setup_install_in(dir: &Path) -> bool {
 
 /// The arguments the installer runs with when RustGIS closes: silently (`/S`), opening RustGIS
 /// again when done (`/RELAUNCH`, see `packaging/windows/rustgis.nsi`), into this install's
-/// folder. NSIS takes `/D=` last and unquoted, spaces and all: the caller passes it raw.
-pub(crate) fn installer_args(dir: &Path) -> (Vec<&'static str>, String) {
-    (vec!["/S", "/RELAUNCH"], format!("/D={}", dir.display()))
+/// folder. NSIS takes `/D=` last and unquoted, spaces and all: the caller passes it raw, and as
+/// the system gives the folder, not as text, so no path changes on the way.
+pub(crate) fn installer_args(dir: &Path) -> (Vec<&'static str>, OsString) {
+    let mut d = OsString::from("/D=");
+    d.push(dir.as_os_str());
+    (vec!["/S", "/RELAUNCH"], d)
+}
+
+/// Whether the saved installer is still the one that was checked, read again just before
+/// RustGIS closes to run it: a file removed or changed since says so while RustGIS can still
+/// show it, instead of an update that quietly doesn't happen.
+pub(crate) fn still_checked(path: &Path, sha: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if sha256(&bytes) != sha {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        return Err(crate::i18n::fmt("{name} changed after it was checked: download it again.", &[("name", &name)]));
+    }
+    Ok(())
+}
+
+/// The `updates` folder in RustGIS's cache, where installers and the note are kept.
+fn updates_dir() -> Result<PathBuf, String> {
+    Ok(rustgis_engine::data::dirs::cache_dir()
+        .ok_or_else(|| tl_raw!("There is no cache folder to keep the installer in.").to_string())?
+        .join("updates"))
+}
+
+/// Notes, for the next start, that `version` is being installed: once RustGIS has closed nothing
+/// can be shown, so the run after says whether that version arrived (the installer failing to
+/// start, or failing silently, isn't lost).
+pub(crate) fn note_pending(version: &str) -> Result<(), String> {
+    let path = updates_dir()?.join(PENDING);
+    std::fs::write(&path, version).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// What the last Install and Restart did, read once at start and forgotten: `Ok(version)` when
+/// this RustGIS is the version it installed, `Err(version)` when it isn't. Its installer goes too.
+pub(crate) fn last_install(current: &str) -> Option<Result<String, String>> {
+    let dir = updates_dir().ok()?;
+    last_install_in(&dir, current)
+}
+
+fn last_install_in(dir: &Path, current: &str) -> Option<Result<String, String>> {
+    let version = std::fs::read_to_string(dir.join(PENDING)).ok()?.trim().to_string();
+    clear(dir, None);
+    (!version.is_empty()).then(|| if super::version_eq(&version, current) { Ok(version) } else { Err(version) })
+}
+
+/// Removes what earlier updates left in the `updates` folder, but `keep`.
+fn clear(dir: &Path, keep: Option<&Path>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if Some(p.as_path()) != keep && p.is_file() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 }
 
 /// A download under way: bytes so far and in all, and a way to stop it.
@@ -88,10 +156,17 @@ pub(crate) struct Progress {
     pub cancel: Arc<AtomicBool>,
 }
 
+/// A checked installer, saved: where it is and its SHA-256 (to check it again before it runs).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Saved {
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
 /// Downloads the installer and the checksums on a thread, checks the installer, and saves it in
-/// RustGIS's cache folder; the slot gets its path, or why not.
-pub(crate) fn start(installer: Asset, sums: Asset, progress: Progress, ctx: egui::Context) -> Slot<Result<PathBuf, String>> {
-    let slot: Slot<Result<PathBuf, String>> = Slot::default();
+/// RustGIS's cache folder; the slot gets it, or why not.
+pub(crate) fn start(installer: Asset, sums: Asset, progress: Progress, ctx: egui::Context) -> Slot<Result<Saved, String>> {
+    let slot: Slot<Result<Saved, String>> = Slot::default();
     let out = slot.clone();
     std::thread::spawn(move || {
         let r = download(&installer, &sums, &progress, &ctx);
@@ -103,7 +178,7 @@ pub(crate) fn start(installer: Asset, sums: Asset, progress: Progress, ctx: egui
     slot
 }
 
-fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Context) -> Result<PathBuf, String> {
+fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Context) -> Result<Saved, String> {
     let sums = rustgis_engine::plugins::registry::fetch(&sums.url, MAX_SUMS)?;
     let sums = String::from_utf8(sums).map_err(|_| tl_raw!("The release's checksums aren't text.").to_string())?;
     let bytes = rustgis_engine::plugins::registry::fetch_with_progress(&installer.url, MAX_INSTALLER, TIMEOUT, &mut |done, total| {
@@ -113,13 +188,13 @@ fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Co
         !progress.cancel.load(Ordering::Relaxed)
     })?;
     verify(&bytes, &installer.name, &sums)?;
-    let dir = rustgis_engine::data::dirs::cache_dir()
-        .ok_or_else(|| tl_raw!("There is no cache folder to keep the installer in.").to_string())?
-        .join("updates");
+    let dir = updates_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // One installer kept: an earlier update's goes.
+    clear(&dir, None);
     let path = dir.join(&installer.name);
     std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(path)
+    Ok(Saved { path, sha256: sha256(&bytes) })
 }
 
 #[cfg(test)]
@@ -131,6 +206,7 @@ mod tests {
             version: "0.6.0".into(),
             url: String::new(),
             notes: String::new(),
+            notes_cut: false,
             assets: names.iter().map(|n| Asset { name: n.to_string(), url: format!("https://example.com/{n}") }).collect(),
         }
     }
@@ -154,7 +230,7 @@ mod tests {
     #[test]
     fn an_installer_runs_only_when_it_matches_the_release_checksum() {
         let bytes = b"installer";
-        let hash: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+        let hash = sha256(bytes);
         let name = "RustGIS-0.6.0-windows-x86_64-setup.exe";
         let sums = format!("{}  other.exe\n{hash}  {name}\n", "0".repeat(64));
         assert_eq!(verify(bytes, name, &sums), Ok(()));
@@ -183,6 +259,48 @@ mod tests {
         let (args, dir) = installer_args(Path::new(r"C:\Users\Ana María\AppData\Local\Programs\RustGIS"));
         assert_eq!(args, ["/S", "/RELAUNCH"]);
         // Last and unquoted, as NSIS wants it, even with spaces.
-        assert_eq!(dir, r"/D=C:\Users\Ana María\AppData\Local\Programs\RustGIS");
+        assert_eq!(dir, OsString::from(r"/D=C:\Users\Ana María\AppData\Local\Programs\RustGIS"));
+    }
+
+    #[test]
+    fn a_saved_installer_is_checked_again_before_it_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("RustGIS-0.6.0-windows-x86_64-setup.exe");
+        std::fs::write(&path, b"installer").unwrap();
+        let sha = sha256(b"installer");
+        assert_eq!(still_checked(&path, &sha), Ok(()));
+        std::fs::write(&path, b"installer, changed").unwrap();
+        assert!(still_checked(&path, &sha).unwrap_err().contains("changed after it was checked"));
+        std::fs::remove_file(&path).unwrap();
+        assert!(still_checked(&path, &sha).is_err());
+    }
+
+    #[test]
+    fn the_next_start_says_whether_the_update_arrived() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing was installed.
+        assert_eq!(last_install_in(dir.path(), "0.6.0"), None);
+        // The version installed is this one: it arrived, and the installer is cleared.
+        std::fs::write(dir.path().join("RustGIS-0.6.0-windows-x86_64-setup.exe"), b"x").unwrap();
+        std::fs::write(dir.path().join(PENDING), "0.6.0\n").unwrap();
+        assert_eq!(last_install_in(dir.path(), "0.6.0"), Some(Ok("0.6.0".into())));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        // Asked once only.
+        assert_eq!(last_install_in(dir.path(), "0.6.0"), None);
+        // Still the old version: the update didn't happen, and the next start says so once.
+        std::fs::write(dir.path().join(PENDING), "0.6.0").unwrap();
+        assert_eq!(last_install_in(dir.path(), "0.5.0"), Some(Err("0.6.0".into())));
+        assert_eq!(last_install_in(dir.path(), "0.5.0"), None);
+    }
+
+    #[test]
+    fn earlier_installers_are_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in ["RustGIS-0.5.0-windows-x86_64-setup.exe", PENDING, "keep.exe"] {
+            std::fs::write(dir.path().join(n), b"x").unwrap();
+        }
+        clear(dir.path(), Some(&dir.path().join("keep.exe")));
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, ["keep.exe"]);
     }
 }

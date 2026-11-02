@@ -60,9 +60,13 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
 !macroend
 
 ; RustGIS's Download and Install (Help › Check for Updates) runs this installer as RustGIS
-; closes: `/S /RELAUNCH /D=<its folder>`. Its rustgis.exe can't be replaced while it runs, so
-; wait for it to be released, for up to 30 seconds.
+; closes: `/S /RELAUNCH /D=<its folder>`. Its rustgis.exe can't be replaced while it runs, so a
+; silent install waits for it to be released, for up to 30 seconds. Still running then, nothing
+; is installed (exit code 2): a silent install would skip the locked files and still record the
+; new version. RustGIS's next start says the update didn't arrive. Run by hand, the installer
+; doesn't wait: replacing a running RustGIS asks to retry, as before.
 !macro WaitForRustGIS
+  IfSilent 0 rustgis_free
   IfFileExists "$INSTDIR\rustgis.exe" 0 rustgis_free
   StrCpy $1 0
   rustgis_wait:
@@ -70,9 +74,13 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
     FileOpen $0 "$INSTDIR\rustgis.exe" a
     IfErrors 0 rustgis_open
     IntOp $1 $1 + 1
-    IntCmp $1 60 rustgis_free
+    ; Equal (60 tries, 30 s) or more: still running; less: 0, the next line, waits again.
+    IntCmp $1 60 rustgis_busy 0 rustgis_busy
     Sleep 500
     Goto rustgis_wait
+  rustgis_busy:
+    SetErrorLevel 2
+    Quit
   rustgis_open:
     FileClose $0
   rustgis_free:
