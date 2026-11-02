@@ -28,6 +28,7 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
 
 !include "MUI2.nsh"
 !include "WinMessages.nsh"
+!include "FileFunc.nsh"
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -58,8 +59,28 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 !macroend
 
+; RustGIS's Download and Install (Help › Check for Updates) runs this installer as RustGIS
+; closes: `/S /RELAUNCH /D=<its folder>`. Its rustgis.exe can't be replaced while it runs, so
+; wait for it to be released, for up to 30 seconds.
+!macro WaitForRustGIS
+  IfFileExists "$INSTDIR\rustgis.exe" 0 rustgis_free
+  StrCpy $1 0
+  rustgis_wait:
+    ClearErrors
+    FileOpen $0 "$INSTDIR\rustgis.exe" a
+    IfErrors 0 rustgis_open
+    IntOp $1 $1 + 1
+    IntCmp $1 60 rustgis_free
+    Sleep 500
+    Goto rustgis_wait
+  rustgis_open:
+    FileClose $0
+  rustgis_free:
+!macroend
+
 Section "Install"
   SetOutPath "$INSTDIR"
+  !insertmacro WaitForRustGIS
   File "${STAGE}\rustgis.exe"
   File "${STAGE}\rustgis-cli.exe"
   File /oname=LICENSE.txt "${STAGE}\LICENSE"
@@ -100,6 +121,14 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
   SectionGetSize 0 $0
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" $0
+
+  ; Run by Download and Install: open the updated RustGIS again (the finish page's Start
+  ; RustGIS does it when installing by hand).
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/RELAUNCH" $R1
+  IfErrors +2
+    Exec '"$INSTDIR\rustgis.exe"'
 SectionEnd
 
 Section "Uninstall"

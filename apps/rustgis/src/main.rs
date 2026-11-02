@@ -327,6 +327,8 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.0.end_autosave();
         running::close(&self.1);
+        #[cfg(windows)]
+        run_installer(&self.0);
     }
 }
 
@@ -424,6 +426,20 @@ fn backends(flag: Option<&str>, env: Option<&str>, windows: bool) -> wgpu::Backe
     let parse = |list: &str| Some(wgpu::Backends::from_comma_list(list) & desktop).filter(|b| !b.is_empty());
     let chosen = flag.and_then(parse).or_else(|| env.and_then(parse));
     chosen.unwrap_or(if windows { wgpu::Backends::DX12 | wgpu::Backends::GL } else { wgpu::Backends::PRIMARY | wgpu::Backends::GL })
+}
+
+/// Help › Check for Updates › Install and Restart: the downloaded, checked installer runs as
+/// RustGIS closes, silently, and opens RustGIS again when done (#1290). It waits for this
+/// process to end before replacing its files (`packaging/windows/rustgis.nsi`).
+#[cfg(windows)]
+fn run_installer(app: &RustGisApp) {
+    use std::os::windows::process::CommandExt;
+    let Some((installer, args, dir)) = app.update.installer_at_exit() else { return };
+    // NSIS reads `/D=` last and unquoted, spaces and all: raw, not quoted as an argument.
+    match std::process::Command::new(&installer).args(args).raw_arg(&dir).spawn() {
+        Ok(_) => log::info!("running {} to update RustGIS", installer.display()),
+        Err(e) => log::warn!("could not run the installer {} ({e}): RustGIS stays as it is", installer.display()),
+    }
 }
 
 fn main() -> eframe::Result {

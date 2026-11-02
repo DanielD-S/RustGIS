@@ -211,23 +211,48 @@ pub fn blocked<'a>(list: &'a [Blocked], id: &str, sha256: &str) -> Option<&'a Bl
 /// Downloads `url` (at most `limit` bytes). Native only: the browser fetches with its own API.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn fetch(url: &str, limit: usize) -> Result<Vec<u8>, String> {
+    fetch_with_progress(url, limit, std::time::Duration::from_secs(120), &mut |_, _| true)
+}
+
+/// Downloads `url` as [`fetch`] does, within `timeout` in all, telling `progress` the bytes read
+/// so far and the size the server gave, if it did, after each piece; the download stops, as an
+/// error, when `progress` answers `false` (the user cancelled). For large files: an installer.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn fetch_with_progress(
+    url: &str,
+    limit: usize,
+    timeout: std::time::Duration,
+    progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<Vec<u8>, String> {
     use std::io::Read;
     if !allowed_url(url) {
         return Err(format!("{url}: only HTTPS addresses are allowed"));
     }
     // Redirects stay on HTTPS (a local test registry may use plain HTTP, and only locally).
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .timeout_global(Some(timeout))
         .https_only(!is_local(url))
         .max_redirects(if is_local(url) { 0 } else { 5 })
         .build()
         .into();
     let mut resp =
         agent.get(url).header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION"))).call().map_err(|e| format!("{url}: {e}"))?;
+    let total = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
+    let mut reader = resp.body_mut().with_config().limit(limit as u64 + 1).reader();
     let mut buf = Vec::new();
-    resp.body_mut().with_config().limit(limit as u64 + 1).reader().read_to_end(&mut buf).map_err(|e| format!("{url}: {e}"))?;
-    if buf.len() > limit {
-        return Err(format!("{url} is larger than {} MB", limit / (1024 * 1024)));
+    let mut piece = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut piece).map_err(|e| format!("{url}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(piece.get(..n).unwrap_or_default());
+        if buf.len() > limit {
+            return Err(format!("{url} is larger than {} MB", limit / (1024 * 1024)));
+        }
+        if !progress(buf.len() as u64, total) {
+            return Err(format!("{url}: cancelled"));
+        }
     }
     Ok(buf)
 }

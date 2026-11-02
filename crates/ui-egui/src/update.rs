@@ -1,17 +1,24 @@
-//! Help › Check for Updates: asks GitHub for the latest release and compares it with this build.
-//! Nothing is sent until the user asks.
+//! Help › Check for Updates: asks GitHub for the latest release and compares it with this build,
+//! showing a newer one's version and release notes. On Windows, a copy installed with
+//! `setup.exe` can download that release's installer, check it and install it when RustGIS
+//! closes (#1290, see [`install`]). Nothing is sent until the user asks.
 
 use egui::Align2;
 use serde_json::Value;
 
 use crate::{RustGisApp, Slot};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod install;
+
 /// The latest release, as JSON naming its tag and page.
 const LATEST: &str = "https://api.github.com/repos/opengeos/RustGIS/releases/latest";
 /// Every release, for when the check can't reach GitHub.
 const RELEASES: &str = "https://github.com/opengeos/RustGIS/releases";
-/// The release JSON is a few kilobytes; anything far larger isn't it.
+/// The release JSON is a few kilobytes (some tens with long notes); anything far larger isn't it.
 const MAX_BYTES: usize = 1024 * 1024;
+/// The release notes shown, at most: the rest is on the release page.
+const MAX_NOTES: usize = 20_000;
 
 /// The Check for Updates window.
 #[derive(Default)]
@@ -21,6 +28,30 @@ pub struct UpdateState {
     start: bool,
     pending: Option<Slot<Result<Vec<u8>, String>>>,
     result: Option<Result<Release, String>>,
+    /// Download and Install: what it is doing.
+    #[cfg(not(target_arch = "wasm32"))]
+    install: Install,
+}
+
+/// Download and Install's progress, from the click to the installer waiting for RustGIS to close.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+enum Install {
+    #[default]
+    Idle,
+    /// Downloading and checking `version`'s installer.
+    Downloading {
+        version: String,
+        progress: install::Progress,
+        slot: Slot<Result<std::path::PathBuf, String>>,
+    },
+    /// Checked and saved: it runs when RustGIS closes, once the user has said so (`at_exit`).
+    Ready {
+        version: String,
+        path: std::path::PathBuf,
+        at_exit: bool,
+    },
+    Failed(String),
 }
 
 impl UpdateState {
@@ -30,13 +61,33 @@ impl UpdateState {
         self.start = true;
         self.result = None;
     }
+
+    /// The installer to run as RustGIS closes, and the folder it installs into: set once the user
+    /// chose Install and Restart. The desktop app runs it from its exit (`apps/rustgis`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn installer_at_exit(&self) -> Option<(std::path::PathBuf, Vec<&'static str>, String)> {
+        let Install::Ready { path, at_exit: true, .. } = &self.install else { return None };
+        let (args, dir) = install::installer_args(&install::setup_install()?);
+        Some((path.clone(), args, dir))
+    }
 }
 
-/// A published release: its version (the tag without its `v`) and its page.
+/// A file published with a release.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asset {
+    pub name: String,
+    pub url: String,
+}
+
+/// A published release: its version (the tag without its `v`), its page, its notes and files.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
     pub version: String,
     pub url: String,
+    /// The release notes, as written (Markdown), cut to [`MAX_NOTES`].
+    pub notes: String,
+    /// Its files with an address RustGIS downloads from: HTTPS, or HTTP to this computer.
+    pub assets: Vec<Asset>,
 }
 
 /// Reads GitHub's latest-release JSON.
@@ -49,7 +100,38 @@ pub fn parse_release(body: &[u8]) -> Result<Release, String> {
         return Err("GitHub's latest release has no version number".into());
     }
     let url = v.get("html_url").and_then(Value::as_str).filter(|u| u.starts_with("https://")).unwrap_or(RELEASES);
-    Ok(Release { version: tag.trim_start_matches(['v', 'V']).to_string(), url: url.to_string() })
+    let body = v.get("body").and_then(Value::as_str).unwrap_or_default().trim();
+    let notes = match body.char_indices().nth(MAX_NOTES) {
+        Some((cut, _)) => format!("{}…", body.get(..cut).unwrap_or_default()),
+        None => body.to_string(),
+    };
+    let assets = v
+        .get("assets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|a| {
+            let name = a.get("name").and_then(Value::as_str)?;
+            // HTTPS, or HTTP to this computer (a release served there to try an update).
+            let url =
+                a.get("browser_download_url").and_then(Value::as_str).filter(|u| rustgis_engine::plugins::registry::allowed_url(u))?;
+            Some(Asset { name: name.to_string(), url: url.to_string() })
+        })
+        .collect();
+    Ok(Release { version: tag.trim_start_matches(['v', 'V']).to_string(), url: url.to_string(), notes, assets })
+}
+
+/// Where the check asks for the latest release: GitHub's API, or, to try an update against a
+/// release served on this computer, the release JSON `RUSTGIS_UPDATE_RELEASE` names (HTTPS, or
+/// HTTP to this computer, as every download here).
+fn latest_url() -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(url) = std::env::var("RUSTGIS_UPDATE_RELEASE")
+        && !url.trim().is_empty()
+    {
+        return url.trim().to_string();
+    }
+    LATEST.to_string()
 }
 
 /// A pre-release identifier: numbers sort numerically and before words (`beta.2` < `beta.10`,
@@ -100,6 +182,26 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
+/// What a click in the window asks for, done once it has drawn.
+#[cfg(not(target_arch = "wasm32"))]
+enum Action {
+    /// Download and check the installer of `version` (Download and Install, or Try Again).
+    Download {
+        version: String,
+        installer: Asset,
+        sums: Asset,
+    },
+    Cancel,
+    /// Install and Restart: close RustGIS, which runs the installer.
+    InstallNow,
+}
+
+/// Megabytes, for a download's progress.
+#[cfg(not(target_arch = "wasm32"))]
+fn mb(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / (1024.0 * 1024.0))
+}
+
 /// Draws the window, starting and collecting the check.
 pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     if !app.update.open {
@@ -107,16 +209,27 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     // A check asked for while one is running waits for that one rather than sending another.
     if std::mem::take(&mut app.update.start) && app.update.pending.is_none() && !cfg!(target_arch = "wasm32") {
-        app.update.pending = Some(crate::pluginsui::fetch(app, LATEST, MAX_BYTES, Some(ctx.clone())));
+        app.update.pending = Some(crate::pluginsui::fetch(app, &latest_url(), MAX_BYTES, Some(ctx.clone())));
     }
     if let Some(r) = app.update.pending.as_ref().and_then(crate::pluginsui::take) {
         app.update.pending = None;
         app.update.result = Some(r.and_then(|body| parse_release(&body)));
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Install::Downloading { version, slot, .. } = &app.update.install
+        && let Some(r) = slot.lock().ok().and_then(|mut s| s.take())
+    {
+        app.update.install = match r {
+            Ok(path) => Install::Ready { version: version.clone(), path, at_exit: false },
+            Err(e) => Install::Failed(e),
+        };
+    }
     let current = env!("CARGO_PKG_VERSION");
     let mut open = true;
     let mut again = false;
     let mut visit: Option<String> = None;
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut action: Option<Action> = None;
     egui::Window::new(tl!("Check for Updates"))
         .open(&mut open)
         .collapsible(false)
@@ -124,7 +237,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
-            ui.set_width(380.0);
+            ui.set_width(420.0);
             if cfg!(target_arch = "wasm32") {
                 ui.label(tl!("The web app always runs the latest release: reload the page to get it."));
                 return;
@@ -139,17 +252,108 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                 Some(Ok(r)) if is_newer(&r.version, current) => {
                     ui.label(egui::RichText::new(crate::i18n::fmt("RustGIS {latest} is available.", &[("latest", &r.version)])).strong());
                     ui.label(crate::i18n::fmt("You have version {version}.", &[("version", current)]));
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(tl!("Installed with Homebrew, winget, the AUR or COPR? Update it there.")).small().weak());
+                    // What the release brings, before anything is installed.
+                    if !r.notes.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(tl!("What's new")).strong());
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+                                ui.label(egui::RichText::new(&r.notes).small());
+                            });
+                        });
+                    }
                     ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ui.button(tl!("Open the Release Page")).clicked() {
-                            visit = Some(r.url.clone());
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let assets = install::setup_install().and(install::assets_for(r, std::env::consts::ARCH));
+                        let stage = match &app.update.install {
+                            // A download of another release (an older check) doesn't count.
+                            Install::Downloading { version, .. } | Install::Ready { version, .. } if *version != r.version => {
+                                &Install::Idle
+                            }
+                            s => s,
+                        };
+                        match (stage, assets) {
+                            (Install::Downloading { progress, .. }, _) => {
+                                use std::sync::atomic::Ordering;
+                                let (done, total) = (progress.done.load(Ordering::Relaxed), progress.total.load(Ordering::Relaxed));
+                                let text = if total > 0 {
+                                    crate::i18n::fmt("Downloading: {done} of {total} MB", &[("done", &mb(done)), ("total", &mb(total))])
+                                } else {
+                                    crate::i18n::fmt("Downloading: {done} MB", &[("done", &mb(done))])
+                                };
+                                let bar = if total > 0 {
+                                    egui::ProgressBar::new(done as f32 / total as f32)
+                                } else {
+                                    egui::ProgressBar::new(0.0).animate(true)
+                                };
+                                ui.add(bar.text(text));
+                                ui.add_space(6.0);
+                                if ui.button(tl!("Cancel")).clicked() {
+                                    action = Some(Action::Cancel);
+                                }
+                            }
+                            (Install::Ready { at_exit, .. }, _) => {
+                                ui.label(tl!(
+                                    "The installer is downloaded and checked. RustGIS closes, installs the update and opens again."
+                                ));
+                                if *at_exit {
+                                    ui.label(egui::RichText::new(tl!("It installs when RustGIS closes.")).small().weak());
+                                }
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if ui.button(tl!("Install and Restart")).clicked() {
+                                        action = Some(Action::InstallNow);
+                                    }
+                                    if ui.button(tl!("Open the Release Page")).clicked() {
+                                        visit = Some(r.url.clone());
+                                    }
+                                });
+                            }
+                            (stage, Some((installer, sums))) => {
+                                if let Install::Failed(e) = stage {
+                                    ui.label(
+                                        egui::RichText::new(crate::i18n::fmt(
+                                            "Couldn't download the update: {error}",
+                                            &[("error", tl_raw!(e.as_str()))],
+                                        ))
+                                        .color(ui.visuals().error_fg_color),
+                                    );
+                                    ui.add_space(4.0);
+                                }
+                                ui.horizontal(|ui| {
+                                    let label =
+                                        if matches!(stage, Install::Failed(_)) { tl!("Try Again") } else { tl!("Download and Install") };
+                                    if ui.button(label).clicked() {
+                                        action = Some(Action::Download {
+                                            version: r.version.clone(),
+                                            installer: installer.clone(),
+                                            sums: sums.clone(),
+                                        });
+                                    }
+                                    if ui.button(tl!("Open the Release Page")).clicked() {
+                                        visit = Some(r.url.clone());
+                                    }
+                                });
+                            }
+                            (_, None) => {
+                                ui.label(
+                                    egui::RichText::new(tl!("Installed with Homebrew, winget, the AUR or COPR? Update it there."))
+                                        .small()
+                                        .weak(),
+                                );
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if ui.button(tl!("Open the Release Page")).clicked() {
+                                        visit = Some(r.url.clone());
+                                    }
+                                    if ui.button(tl!("Check Again")).clicked() {
+                                        again = true;
+                                    }
+                                });
+                            }
                         }
-                        if ui.button(tl!("Check Again")).clicked() {
-                            again = true;
-                        }
-                    });
+                    }
                 }
                 Some(Ok(_)) => {
                     ui.label(crate::i18n::fmt("RustGIS {version} is the latest version.", &[("version", current)]));
@@ -172,6 +376,29 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                 }
             }
         });
+    #[cfg(not(target_arch = "wasm32"))]
+    match action {
+        Some(Action::Download { version, installer, sums }) => {
+            let progress = install::Progress::default();
+            let slot = install::start(installer, sums, progress.clone(), ctx.clone());
+            app.update.install = Install::Downloading { version, progress, slot };
+        }
+        Some(Action::Cancel) => {
+            if let Install::Downloading { progress, .. } = &app.update.install {
+                progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            app.update.install = Install::Idle;
+        }
+        // The usual way out: a project with unsaved changes asks first (Cancel keeps RustGIS
+        // open, and the update waits for it to close).
+        Some(Action::InstallNow) => {
+            if let Install::Ready { at_exit, .. } = &mut app.update.install {
+                *at_exit = true;
+            }
+            app.quit_requested = true;
+        }
+        None => {}
+    }
     if again {
         app.update.check();
     }
@@ -223,5 +450,31 @@ mod tests {
         // A tag that isn't a version is an error, not "up to date".
         assert!(parse_release(br#"{"tag_name":"release-2.0.0"}"#).is_err());
         assert_eq!(parse_release(br#"{"tag_name":"v1.0.0-rc.1"}"#).unwrap().version, "1.0.0-rc.1");
+    }
+
+    #[test]
+    fn release_notes_and_files_are_read() {
+        let r = parse_release(
+            br#"{"tag_name":"v0.6.0","body":"  ## Highlights\n- Faster maps  ","assets":[
+                {"name":"SHA256SUMS","browser_download_url":"https://github.com/opengeos/RustGIS/releases/download/v0.6.0/SHA256SUMS"},
+                {"name":"plain.exe","browser_download_url":"http://example.com/plain.exe"},
+                {"name":"local.exe","browser_download_url":"http://127.0.0.1:8000/local.exe"},
+                {"name":"nameless"},
+                {"browser_download_url":"https://example.com/x"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.notes, "## Highlights\n- Faster maps");
+        // Only files with a name and an address RustGIS downloads from: HTTPS, or HTTP to this
+        // computer (a release served there to try an update), not plain HTTP elsewhere.
+        assert_eq!(r.assets.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["SHA256SUMS", "local.exe"]);
+        // No notes or files: empty, not an error.
+        let r = parse_release(br#"{"tag_name":"v0.6.0","body":null,"assets":"none"}"#).unwrap();
+        assert!(r.notes.is_empty() && r.assets.is_empty());
+        // Long notes are cut, on a character.
+        let long = format!(r#"{{"tag_name":"v0.6.0","body":"{}"}}"#, "é".repeat(MAX_NOTES + 10));
+        let notes = parse_release(long.as_bytes()).unwrap().notes;
+        assert_eq!(notes.chars().count(), MAX_NOTES + 1);
+        assert!(notes.ends_with('…'));
     }
 }

@@ -48,6 +48,14 @@ deployment (`msiexec /i RustGIS-<version>-windows-<arch>.msi /qn`, where `<arch>
 entry, open `.rgis` projects, list RustGIS under **Open with** for `.geojson`, and
 uninstall from **Settings › Apps**.
 
+RustGIS installed with `setup.exe` updates itself: **Help › Check for Updates** shows a newer
+release's version and notes, and **Download and Install** downloads that release's `setup.exe`
+for your computer and checks it against the release's `SHA256SUMS` before it may run. **Install
+and Restart** then closes RustGIS (asking to save unsaved changes first), installs the update
+over it and opens it again; settings, plugins and data stay where they are. Chosen and then
+cancelled at the save question, the update installs the next time RustGIS closes. The `.msi`,
+the Store, winget and the portable zip update their own way.
+
 The `.msix` is the package submitted to the Microsoft Store, which signs it. It is unsigned
 on the release page, so Windows only installs it from the
 [Store](https://apps.microsoft.com/detail/9ppjw8h561lq); outside the Store, download an installer
