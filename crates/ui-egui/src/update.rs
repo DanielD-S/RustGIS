@@ -121,6 +121,48 @@ pub fn parse_release(body: &[u8]) -> Result<Release, String> {
     Ok(Release { version: tag.trim_start_matches(['v', 'V']).to_string(), url: url.to_string(), notes, assets })
 }
 
+/// Release notes as plain text, for a label: headings without their `#`, list items with a
+/// bullet, links as their text, and no emphasis or code marks.
+fn plain_notes(markdown: &str) -> String {
+    let mut out = Vec::new();
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.get(..line.len() - trimmed.len()).unwrap_or_default();
+        let line = if trimmed.starts_with('#') {
+            trimmed.trim_start_matches('#').trim_start().to_string()
+        } else if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            format!("{indent}• {item}")
+        } else {
+            line.to_string()
+        };
+        // `[text](address)` reads as its text.
+        let mut text = String::with_capacity(line.len());
+        let mut rest = line.as_str();
+        while let Some(open) = rest.find('[') {
+            let (before, after) = rest.split_at(open);
+            text.push_str(before);
+            // The `](` right after this bracket's own `]`: `[a] and [b](c)` is no link at `[a]`.
+            let link = after
+                .find(']')
+                .filter(|&mid| after.get(mid + 1..).is_some_and(|s| s.starts_with('(')))
+                .and_then(|mid| after.get(mid..)?.find(')').map(|close| (mid, mid + close)));
+            match link {
+                Some((mid, close)) => {
+                    text.push_str(after.get(1..mid).unwrap_or_default());
+                    rest = after.get(close + 1..).unwrap_or_default();
+                }
+                None => {
+                    text.push('[');
+                    rest = after.get(1..).unwrap_or_default();
+                }
+            }
+        }
+        text.push_str(rest);
+        out.push(text.replace("**", "").replace("__", "").replace('`', ""));
+    }
+    out.join("\n")
+}
+
 /// Where the check asks for the latest release: GitHub's API, or, to try an update against a
 /// release served on this computer, the release JSON `RUSTGIS_UPDATE_RELEASE` names (HTTPS, or
 /// HTTP to this computer, as every download here).
@@ -258,7 +300,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         ui.label(egui::RichText::new(tl!("What's new")).strong());
                         egui::Frame::group(ui.style()).show(ui, |ui| {
                             egui::ScrollArea::vertical().max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
-                                ui.label(egui::RichText::new(&r.notes).small());
+                                ui.label(egui::RichText::new(plain_notes(&r.notes)).small());
                             });
                         });
                     }
@@ -476,5 +518,17 @@ mod tests {
         let notes = parse_release(long.as_bytes()).unwrap().notes;
         assert_eq!(notes.chars().count(), MAX_NOTES + 1);
         assert!(notes.ends_with('…'));
+    }
+
+    #[test]
+    fn release_notes_show_as_plain_text() {
+        let md = "## Highlights\n- **Layouts**: see [the guide](https://rustgis.app/user-guide/layouts/).\n  * nested `code`\n\
+                  Plain [brackets] stay, and [a link](https://x) too.\n# Fixes";
+        assert_eq!(
+            plain_notes(md),
+            "Highlights\n• Layouts: see the guide.\n  • nested code\nPlain [brackets] stay, and a link too.\nFixes"
+        );
+        assert_eq!(plain_notes("[unclosed](https://x"), "[unclosed](https://x");
+        assert_eq!(plain_notes(""), "");
     }
 }
