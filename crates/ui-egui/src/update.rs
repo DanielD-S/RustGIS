@@ -492,6 +492,10 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         Some(Action::Download { version, installer, sums }) => {
             let progress = install::Progress::default();
             let slot = install::start(installer, sums, progress.clone(), ctx.clone());
+            // Another release's download, replaced: stopped, so it can't clear this one's file.
+            if let Install::Downloading { progress: old, .. } = &app.update.install {
+                old.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             app.update.install = Install::Downloading { version, progress, slot };
         }
         Some(Action::Cancel) => {

@@ -521,11 +521,16 @@ fn main() -> eframe::Result {
         log::warn!("{e}");
         app.session.notify(e, true);
     }
-    // Help › Check for Updates' Install and Restart, last time: did the update arrive?
-    if let Some((text, error)) = {
-        rustgis_ui_egui::i18n::set_current(app.chosen_lang());
-        rustgis_ui_egui::last_install_notice()
-    } {
+    // Help › Check for Updates' Install and Restart, last time: did the update arrive? Asked by
+    // the copy holding the run marker only: a second copy started while the first is still open
+    // would take the note of an update that hasn't run yet.
+    if let Ok(m) = &marker
+        && m.locked()
+        && let Some((text, error)) = {
+            rustgis_ui_egui::i18n::set_current(app.chosen_lang());
+            rustgis_ui_egui::last_install_notice()
+        }
+    {
         app.session.notify(text, error);
     }
     for e in open_files(&mut app, &files) {

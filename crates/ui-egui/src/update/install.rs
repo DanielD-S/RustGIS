@@ -193,10 +193,15 @@ fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Co
         !progress.cancel.load(Ordering::Relaxed)
     })?;
     verify(&bytes, &installer.name, &sums)?;
+    // Replaced by another download while this one finished: the folder is that one's now.
+    if progress.cancel.load(Ordering::Relaxed) {
+        return Err(format!("{}: cancelled", installer.url));
+    }
     let dir = updates_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // One installer kept: an earlier update's goes.
-    clear(&dir, None);
+    // One installer kept: an earlier update's goes. The note stays: another copy of RustGIS may
+    // have an update set for when it closes, and the next start says whether it ran.
+    clear(&dir, Some(&dir.join(PENDING)));
     let path = dir.join(&installer.name);
     std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Saved { path, sha256: sha256(&bytes) })
