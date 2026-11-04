@@ -505,7 +505,9 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         // The usual way out: a project with unsaved changes asks first (Cancel keeps RustGIS
         // open, and the update waits for it to close).
         // Checked again first, and the version noted for the next start: once RustGIS has closed
-        // nothing can say that the update didn't happen.
+        // nothing can say that the update didn't happen. The hash runs here, on the window's
+        // thread, so a failure shows before RustGIS closes; for an installer of a few tens of
+        // MB it is a short pause, once, at the click.
         Some(Action::InstallNow) => {
             if let Install::Ready { version, saved, at_exit } = &mut app.update.install {
                 match install::still_checked(&saved.path, &saved.sha256).and_then(|()| install::note_pending(version)) {

@@ -81,8 +81,10 @@ RustGIS is also published to these package managers, which keep it up to date:
 | Arch Linux ([AUR](https://aur.archlinux.org/packages/rustgis-bin)) | `yay -S rustgis-bin` (or any AUR helper) |
 | Fedora ([COPR](https://copr.fedorainfracloud.org/coprs/giswqs/rustgis/)) | `sudo dnf copr enable giswqs/rustgis && sudo dnf install rustgis` |
 
-winget installs for your account with the setup.exe; add `--scope machine` for the `.msi`. On
-Homebrew 5.1 and later, run `brew trust opengeos/rustgis` once before installing from the tap.
+winget installs for your account with the setup.exe; add `--scope machine` for the `.msi`. Close
+RustGIS before `winget upgrade`: the setup.exe, run silently, waits 30 seconds for RustGIS to
+close and otherwise stops without installing (exit code 2), rather than replace only part of it.
+On Homebrew 5.1 and later, run `brew trust opengeos/rustgis` once before installing from the tap.
 Each package is the same build as the release page, and a new release reaches the package
 managers shortly after it is published (winget after Microsoft's review).
 

@@ -212,8 +212,19 @@ fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Co
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     clear_for_download(&dir);
     let path = dir.join(&installer.name);
-    std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Saved { path, sha256: sha256(&bytes) })
+    let sha = sha256(&bytes);
+    save(&path, &bytes, &sha)?;
+    Ok(Saved { path, sha256: sha })
+}
+
+/// Saves the checked installer at `path`, unless that file already is it: another copy of
+/// RustGIS may have set that one to run as it closes, and rewriting it in place could fail the
+/// check it makes then.
+fn save(path: &Path, bytes: &[u8], sha: &str) -> Result<(), String> {
+    if std::fs::read(path).is_ok_and(|b| sha256(&b) == sha) {
+        return Ok(());
+    }
+    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -321,6 +332,21 @@ mod tests {
         clear(dir.path(), &[&dir.path().join("keep.exe")]);
         let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, ["keep.exe"]);
+    }
+
+    #[test]
+    fn an_installer_already_saved_is_not_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("RustGIS-0.6.0-windows-x86_64-setup.exe");
+        save(&path, b"installer", &sha256(b"installer")).unwrap();
+        let written = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        save(&path, b"installer", &sha256(b"installer")).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), written);
+        // Another file at that name is replaced.
+        std::fs::write(&path, b"cut").unwrap();
+        save(&path, b"installer", &sha256(b"installer")).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"installer");
     }
 
     #[test]
