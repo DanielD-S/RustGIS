@@ -411,6 +411,9 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                                     if ui.button(tl!("Open the Release Page")).clicked() {
                                         visit = Some(r.url.clone());
                                     }
+                                    if ui.button(tl!("Check Again")).clicked() {
+                                        again = true;
+                                    }
                                 });
                             }
                             (stage, Some((installer, sums))) => {
@@ -439,6 +442,9 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                                     }
                                     if ui.button(tl!("Open the Release Page")).clicked() {
                                         visit = Some(r.url.clone());
+                                    }
+                                    if ui.button(tl!("Check Again")).clicked() {
+                                        again = true;
                                     }
                                 });
                             }

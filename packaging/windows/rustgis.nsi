@@ -60,35 +60,39 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
 !macroend
 
 ; RustGIS's Download and Install (Help › Check for Updates) runs this installer as RustGIS
-; closes: `/S /RELAUNCH /D=<its folder>`. Its rustgis.exe can't be replaced while it runs, so a
-; silent install waits for it to be released, for up to 30 seconds. Still running then, nothing
-; is installed (exit code 2): a silent install would skip the locked files and still record the
-; new version. RustGIS's next start says the update didn't arrive. Run by hand, the installer
-; doesn't wait: replacing a running RustGIS asks to retry, as before.
-!macro WaitForRustGIS
-  IfSilent 0 rustgis_free
-  IfFileExists "$INSTDIR\rustgis.exe" 0 rustgis_free
+; closes: `/S /RELAUNCH /D=<its folder>`, and winget runs it silently too. A program can't be
+; replaced while it runs, so a silent install waits for each one it replaces (rustgis.exe, and
+; rustgis-cli.exe a terminal may be running) to be released, for up to 30 seconds each. Still
+; running then, nothing is installed (exit code 2): a silent install would skip the locked files
+; and still record the new version. RustGIS's next start says the update didn't arrive. Run by
+; hand, the installer doesn't wait: replacing a running program asks to retry, as before.
+; `ID` makes the labels of each insertion unique.
+!macro WaitForFree FILE ID
+  IfSilent 0 free_${ID}
+  IfFileExists "$INSTDIR\${FILE}" 0 free_${ID}
   StrCpy $1 0
-  rustgis_wait:
+  wait_${ID}:
     ClearErrors
-    FileOpen $0 "$INSTDIR\rustgis.exe" a
-    IfErrors 0 rustgis_open
+    FileOpen $0 "$INSTDIR\${FILE}" a
+    IfErrors 0 open_${ID}
     IntOp $1 $1 + 1
     ; Equal (60 tries, 30 s) or more: still running; less: 0, the next line, waits again.
-    IntCmp $1 60 rustgis_busy 0 rustgis_busy
+    IntCmp $1 60 busy_${ID} 0 busy_${ID}
     Sleep 500
-    Goto rustgis_wait
-  rustgis_busy:
+    Goto wait_${ID}
+  busy_${ID}:
     SetErrorLevel 2
     Quit
-  rustgis_open:
+  open_${ID}:
     FileClose $0
-  rustgis_free:
+  free_${ID}:
 !macroend
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  !insertmacro WaitForRustGIS
+  ; Both before any file is written: either one still running installs nothing.
+  !insertmacro WaitForFree "rustgis.exe" app
+  !insertmacro WaitForFree "rustgis-cli.exe" cli
   File "${STAGE}\rustgis.exe"
   File "${STAGE}\rustgis-cli.exe"
   File /oname=LICENSE.txt "${STAGE}\LICENSE"
