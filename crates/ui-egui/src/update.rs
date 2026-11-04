@@ -43,8 +43,9 @@ enum Install {
     Downloading { version: String, progress: install::Progress, slot: Slot<Result<install::Saved, String>> },
     /// Checked and saved: it runs when RustGIS closes, once the user has said so (`at_exit`).
     Ready { version: String, saved: install::Saved, at_exit: bool },
-    /// `version`'s download or check failed: shown with that release only.
-    Failed { version: String, error: String },
+    /// `version`'s download failed, or Install and Restart's (`installing`): shown with that
+    /// release only. Either way Try Again downloads it again.
+    Failed { version: String, error: String, installing: bool },
 }
 
 /// The installer the desktop app runs as it closes: the program, its switches, and the
@@ -203,17 +204,21 @@ fn plain_notes(markdown: &str) -> String {
 }
 
 /// Where the check asks for the latest release: GitHub's API, or, to try an update against a
-/// release served on this computer, the release JSON `RUSTGIS_UPDATE_RELEASE` names. Only a
-/// local address (`http://127.0.0.1:…`, `http://localhost:…`): a testing aid, which can't send
-/// the check, and the installer it names, anywhere else.
+/// release served on this computer, the release JSON `RUSTGIS_UPDATE_RELEASE` names. A testing
+/// aid, read by development builds only (released ones don't have it), and only for a local
+/// address (`http://127.0.0.1:…`, `http://localhost:…`): it can't send the check, and the
+/// installer it names, anywhere else.
 fn latest_url() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     if let Ok(url) = std::env::var("RUSTGIS_UPDATE_RELEASE") {
         let url = url.trim();
-        if local_release(url) {
+        if !cfg!(debug_assertions) {
+            if !url.is_empty() {
+                log::warn!("RUSTGIS_UPDATE_RELEASE is ignored: only development builds read it");
+            }
+        } else if local_release(url) {
             return url.to_string();
-        }
-        if !url.is_empty() {
+        } else if !url.is_empty() {
             log::warn!("RUSTGIS_UPDATE_RELEASE={url} is ignored: only a release served on this computer (http://127.0.0.1) is");
         }
     }
@@ -313,7 +318,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     {
         app.update.install = match r {
             Ok(saved) => Install::Ready { version: version.clone(), saved, at_exit: false },
-            Err(error) => Install::Failed { version: version.clone(), error },
+            Err(error) => Install::Failed { version: version.clone(), error, installing: false },
         };
     }
     let current = env!("CARGO_PKG_VERSION");
@@ -417,14 +422,14 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                                 });
                             }
                             (stage, Some((installer, sums))) => {
-                                if let Install::Failed { error, .. } = stage {
-                                    ui.label(
-                                        egui::RichText::new(crate::i18n::fmt(
-                                            "Couldn't download the update: {error}",
-                                            &[("error", tl_raw!(error.as_str()))],
-                                        ))
-                                        .color(ui.visuals().error_fg_color),
-                                    );
+                                if let Install::Failed { error, installing, .. } = stage {
+                                    let error = [("error", tl_raw!(error.as_str()))];
+                                    let text = if *installing {
+                                        crate::i18n::fmt("Couldn't install the update: {error}", &error)
+                                    } else {
+                                        crate::i18n::fmt("Couldn't download the update: {error}", &error)
+                                    };
+                                    ui.label(egui::RichText::new(text).color(ui.visuals().error_fg_color));
                                     ui.add_space(4.0);
                                 }
                                 ui.horizontal(|ui| {
@@ -521,7 +526,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         *at_exit = true;
                         app.quit_requested = true;
                     }
-                    Err(error) => app.update.install = Install::Failed { version: version.clone(), error },
+                    Err(error) => app.update.install = Install::Failed { version: version.clone(), error, installing: true },
                 }
             }
         }

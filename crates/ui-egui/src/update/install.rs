@@ -19,6 +19,8 @@ const MAX_INSTALLER: usize = 512 * 1024 * 1024;
 const MAX_SUMS: usize = 1024 * 1024;
 /// Time for the whole download, on a slow connection.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How often the progress bar is redrawn while downloading.
+const REPAINT: std::time::Duration = std::time::Duration::from_millis(100);
 /// The note Install and Restart leaves in the `updates` folder for the next start.
 const PENDING: &str = "installing.txt";
 
@@ -197,10 +199,16 @@ pub(crate) fn start(installer: Asset, sums: Asset, progress: Progress, ctx: egui
 fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Context) -> Result<Saved, String> {
     let sums = rustgis_engine::plugins::registry::fetch(&sums.url, MAX_SUMS)?;
     let sums = String::from_utf8(sums).map_err(|_| tl_raw!("The release's checksums aren't text.").to_string())?;
+    // The bar moves about ten times a second, not at every piece: each repaint draws the whole
+    // window, map included. `start` repaints once more when it ends.
+    let mut shown: Option<std::time::Instant> = None;
     let bytes = rustgis_engine::plugins::registry::fetch_with_progress(&installer.url, MAX_INSTALLER, TIMEOUT, &mut |done, total| {
         progress.done.store(done, Ordering::Relaxed);
         progress.total.store(total.unwrap_or(0), Ordering::Relaxed);
-        ctx.request_repaint();
+        if shown.is_none_or(|t| t.elapsed() >= REPAINT) {
+            shown = Some(std::time::Instant::now());
+            ctx.request_repaint();
+        }
         !progress.cancel.load(Ordering::Relaxed)
     })?;
     verify(&bytes, &installer.name, &sums)?;
