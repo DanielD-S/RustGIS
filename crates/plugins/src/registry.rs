@@ -228,9 +228,12 @@ pub fn fetch_with_progress(
     if !allowed_url(url) {
         return Err(format!("{url}: only HTTPS addresses are allowed"));
     }
-    // Redirects stay on HTTPS (a local test registry may use plain HTTP, and only locally).
+    // Redirects stay on HTTPS (a local test registry may use plain HTTP, and only locally). A
+    // server that stops sending ends the download after a minute, not at `timeout`: until a read
+    // returns, a cancel isn't seen.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
+        .timeout_per_read(Some(std::time::Duration::from_secs(60)))
         .https_only(!is_local(url))
         .max_redirects(if is_local(url) { 0 } else { 5 })
         .build()

@@ -84,7 +84,8 @@ RustGIS is also published to these package managers, which keep it up to date:
 winget installs for your account with the setup.exe; add `--scope machine` for the `.msi`. Close
 RustGIS and `rustgis-cli` before `winget upgrade`: the setup.exe, run silently, waits 30 seconds
 for each to close and otherwise stops without installing (exit code 2), rather than replace only
-part of it.
+part of it. The same goes for Help › Check for Updates › Install and Restart: close any other
+RustGIS window first, or the update waits for it and then isn't installed (RustGIS says so).
 On Homebrew 5.1 and later, run `brew trust opengeos/rustgis` once before installing from the tap.
 Each package is the same build as the release page, and a new release reaches the package
 managers shortly after it is published (winget after Microsoft's review).

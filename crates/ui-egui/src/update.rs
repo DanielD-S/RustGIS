@@ -31,6 +31,10 @@ pub struct UpdateState {
     /// Download and Install: what it is doing.
     #[cfg(not(target_arch = "wasm32"))]
     install: Install,
+    /// When to ask again what the last Install and Restart did: the installer may still have been
+    /// at work as this run started.
+    #[cfg(not(target_arch = "wasm32"))]
+    recheck: Option<std::time::Instant>,
 }
 
 /// Download and Install's progress, from the click to the installer waiting for RustGIS to close.
@@ -71,22 +75,40 @@ impl UpdateState {
     /// start says the update wasn't installed (its version is noted already).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn installer_at_exit(&self) -> Option<PendingInstall> {
-        let Install::Ready { saved, at_exit: true, .. } = &self.install else { return None };
+        let Install::Ready { version, saved, at_exit: true } = &self.install else { return None };
         if let Err(e) = install::still_checked(&saved.path, &saved.sha256) {
             log::warn!("The update isn't installed: {e}");
             return None;
         }
-        let (args, folder) = install::installer_args(&install::setup_install()?);
+        // Checked again: RustGIS's own uninstaller may have run since the window first asked.
+        let dir = install::setup_install().filter(|d| install::setup_install_in(d))?;
+        // Noted again as the installer starts: the note's age tells a RustGIS started meanwhile
+        // that the installer may still be at work, however long the save question took.
+        if let Err(e) = install::note_pending(version) {
+            log::warn!("could not note the update being installed: {e}");
+        }
+        let (args, folder) = install::installer_args(&dir);
         Some(PendingInstall { installer: saved.path.clone(), args, folder })
+    }
+
+    /// At start, what the last Install and Restart did, as a notice and whether it is an error:
+    /// RustGIS was updated, or the update didn't arrive (asked once; nothing could say so as
+    /// RustGIS closed). `None` when nothing was installed, and while the installer may still be at
+    /// work: then the window's frame asks again once it can't be (see [`show`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn last_install_notice(&mut self) -> Option<(String, bool)> {
+        let current = env!("CARGO_PKG_VERSION");
+        self.recheck = install::install_wait_left(current).map(|left| std::time::Instant::now() + left);
+        if self.recheck.is_some() {
+            return None;
+        }
+        last_install_notice(current)
     }
 }
 
-/// At start, what the last Install and Restart did, as a notice and whether it is an error:
-/// RustGIS was updated, or the update didn't arrive (asked once; nothing could say so as RustGIS
-/// closed). `None` when nothing was installed.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn last_install_notice() -> Option<(String, bool)> {
-    Some(match install::last_install(env!("CARGO_PKG_VERSION"))? {
+fn last_install_notice(current: &str) -> Option<(String, bool)> {
+    Some(match install::last_install(current)? {
         Ok(v) => (crate::i18n::fmt("RustGIS was updated to {version}.", &[("version", &v)]), false),
         Err(v) => (
             crate::i18n::fmt(
@@ -183,7 +205,7 @@ fn plain_notes(markdown: &str) -> String {
             let link = after
                 .find(']')
                 .filter(|&mid| after.get(mid + 1..).is_some_and(|s| s.starts_with('(')))
-                .and_then(|mid| after.get(mid..)?.find(')').map(|close| (mid, mid + close)));
+                .and_then(|mid| link_end(after.get(mid + 1..)?).map(|close| (mid, mid + 1 + close)));
             match link {
                 Some((mid, close)) => {
                     // An image, `![alt](src)`, reads as its alt text too.
@@ -203,6 +225,25 @@ fn plain_notes(markdown: &str) -> String {
         out.push(text.replace("**", "").replace('`', ""));
     }
     out.join("\n")
+}
+
+/// Where the `(address)` that `s` starts with ends: at its matching `)`, so an address with
+/// parentheses of its own (`…/Map_(GIS)`) stays whole. `None` when it doesn't close.
+fn link_end(s: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Where the check asks for the latest release: GitHub's API, or, to try an update against a
@@ -303,6 +344,18 @@ fn mb(bytes: u64) -> String {
 
 /// Draws the window, starting and collecting the check.
 pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
+    // The installer was still at work as this run started: once it can't be, say what it did.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(at) = app.update.recheck {
+        match at.checked_duration_since(std::time::Instant::now()) {
+            Some(left) if !left.is_zero() => ctx.request_repaint_after(left),
+            _ => {
+                if let Some((text, error)) = app.update.last_install_notice() {
+                    app.session.notify(text, error);
+                }
+            }
+        }
+    }
     if !app.update.open {
         return;
     }
@@ -645,6 +698,7 @@ mod tests {
         // `#` with no space after it isn't a heading: an issue number keeps it.
         assert_eq!(plain_notes("#1290 fixed\n### Notes"), "#1290 fixed\nNotes");
         assert_eq!(plain_notes("[unclosed](https://x"), "[unclosed](https://x");
+        assert_eq!(plain_notes("See [Map (GIS)](https://example.org/Map_(GIS)) now."), "See Map (GIS) now.");
         assert_eq!(plain_notes(""), "");
         // An image reads as its alt text; `__` stays (a name such as `__init__`).
         assert_eq!(plain_notes("See ![the new window](https://x/shot.webp) and __init__."), "See the new window and __init__.");

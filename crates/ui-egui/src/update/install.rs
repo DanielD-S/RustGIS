@@ -154,19 +154,34 @@ pub(crate) fn last_install(current: &str) -> Option<Result<String, String>> {
     last_install_in(&dir, current)
 }
 
-/// The installer opens RustGIS once it is done (`/RELAUNCH`), so the note is read after it. A
-/// RustGIS started by hand while the installer may still be waiting (a note of another version,
-/// younger than [`INSTALLER_WAIT`]) leaves the note and the installer alone: closed in time, it
-/// lets the update install, and the RustGIS the installer opens says so; kept open, it makes the
-/// installer stop (code 2), and a later start says the update wasn't installed.
-fn last_install_in(dir: &Path, current: &str) -> Option<Result<String, String>> {
+/// How long the installer of the last Install and Restart may still be at work, when it may: its
+/// note names another version and is younger than [`INSTALLER_WAIT`] (noted again as the installer
+/// starts).
+pub(crate) fn install_wait_left(current: &str) -> Option<std::time::Duration> {
+    wait_left_in(&updates_dir().ok()?, current)
+}
+
+fn wait_left_in(dir: &Path, current: &str) -> Option<std::time::Duration> {
     let note = dir.join(PENDING);
-    let version = std::fs::read_to_string(&note).ok()?.trim().to_string();
-    let young =
-        std::fs::metadata(&note).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age < INSTALLER_WAIT);
-    if young && !version.is_empty() && !super::version_eq(&version, current) {
+    let version = std::fs::read_to_string(&note).ok()?;
+    let version = version.trim();
+    if version.is_empty() || super::version_eq(version, current) {
         return None;
     }
+    let age = std::fs::metadata(&note).and_then(|m| m.modified()).ok()?.elapsed().ok()?;
+    INSTALLER_WAIT.checked_sub(age).filter(|left| !left.is_zero())
+}
+
+/// The installer opens RustGIS once it is done (`/RELAUNCH`), so the note is read after it. A
+/// RustGIS started by hand while the installer may still be at work ([`wait_left_in`]) leaves the
+/// note and the installer alone, and asks again once it can't be: closed in time, it lets the
+/// update install, and the RustGIS the installer opens says so; kept open, it makes the
+/// installer stop (code 2), and it says the update wasn't installed.
+fn last_install_in(dir: &Path, current: &str) -> Option<Result<String, String>> {
+    if wait_left_in(dir, current).is_some() {
+        return None;
+    }
+    let version = std::fs::read_to_string(dir.join(PENDING)).ok()?.trim().to_string();
     clear(dir, &[]);
     (!version.is_empty()).then(|| if super::version_eq(&version, current) { Ok(version) } else { Err(version) })
 }
@@ -182,13 +197,14 @@ fn clear(dir: &Path, keep: &[&Path]) {
     }
 }
 
-/// Before a new installer is saved: the earlier ones go, but not an update set to run when
-/// another copy of RustGIS closes, the note and the installer it names. The next start says
-/// whether that one ran.
-fn clear_for_download(dir: &Path) {
+/// Before the installer at `target` is saved: the earlier ones go, but not an update set to run
+/// when another copy of RustGIS closes, the note and the installer it names (the next start says
+/// whether that one ran), nor `target`, which another copy may have downloaded too and not
+/// installed yet.
+fn clear_for_download(dir: &Path, target: &Path) {
     let note = dir.join(PENDING);
     let pending = std::fs::read_to_string(&note).ok().map(|v| dir.join(installer_name(v.trim(), std::env::consts::ARCH)));
-    let mut keep = vec![note.as_path()];
+    let mut keep = vec![note.as_path(), target];
     keep.extend(pending.as_deref());
     clear(dir, &keep);
 }
@@ -246,8 +262,8 @@ fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Co
     }
     let dir = updates_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    clear_for_download(&dir);
     let path = dir.join(&installer.name);
+    clear_for_download(&dir, &path);
     let sha = sha256(&bytes);
     save(&path, &bytes, &sha)?;
     Ok(Saved { path, sha256: sha })
@@ -359,6 +375,10 @@ mod tests {
         std::fs::write(dir.path().join(PENDING), "0.6.0").unwrap();
         assert_eq!(last_install_in(dir.path(), "0.5.0"), None);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        // It asks again once the installer can't be at work any more.
+        let left = wait_left_in(dir.path(), "0.5.0").unwrap();
+        assert!(left > INSTALLER_WAIT - std::time::Duration::from_secs(30) && left <= INSTALLER_WAIT);
+        assert_eq!(wait_left_in(dir.path(), "0.6.0"), None, "the version installed waits for nothing");
         // Still the old version once the installer is long done: the update didn't happen, and
         // the start says so once.
         let old = std::time::SystemTime::now() - INSTALLER_WAIT - std::time::Duration::from_secs(1);
@@ -402,15 +422,18 @@ mod tests {
             std::fs::write(dir.path().join(n), b"x").unwrap();
         }
         std::fs::write(dir.path().join(PENDING), "0.6.0\n").unwrap();
-        clear_for_download(dir.path());
+        clear_for_download(dir.path(), &dir.path().join(installer_name("0.7.0", std::env::consts::ARCH)));
         let mut left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
         left.sort();
         let mut expected = [std::ffi::OsString::from(&set), PENDING.into()];
         expected.sort();
         assert_eq!(left, expected);
-        // Nothing set: every earlier installer goes.
+        // Nothing set: every earlier installer goes, but the one about to be saved.
         std::fs::remove_file(dir.path().join(PENDING)).unwrap();
-        clear_for_download(dir.path());
+        clear_for_download(dir.path(), &dir.path().join(&set));
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, [std::ffi::OsString::from(&set)]);
+        clear_for_download(dir.path(), &dir.path().join(installer_name("0.7.0", std::env::consts::ARCH)));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

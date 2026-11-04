@@ -104,8 +104,6 @@ pub use autosave::{Recovery, RecoveryStore};
 pub use chrome::{DoubleClick, TitlebarMetrics};
 pub use rustgis_assistant;
 pub use rustgis_engine;
-#[cfg(not(target_arch = "wasm32"))]
-pub use update::last_install_notice;
 pub use widgets::big_split_menu;
 
 /// Reconciles only command-result wrappers, not parameters or other arbitrary JSON.
