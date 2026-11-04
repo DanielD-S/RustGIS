@@ -137,19 +137,30 @@ pub(crate) fn last_install(current: &str) -> Option<Result<String, String>> {
 /// didn't; that rare case is left as it is.
 fn last_install_in(dir: &Path, current: &str) -> Option<Result<String, String>> {
     let version = std::fs::read_to_string(dir.join(PENDING)).ok()?.trim().to_string();
-    clear(dir, None);
+    clear(dir, &[]);
     (!version.is_empty()).then(|| if super::version_eq(&version, current) { Ok(version) } else { Err(version) })
 }
 
 /// Removes what earlier updates left in the `updates` folder, but `keep`.
-fn clear(dir: &Path, keep: Option<&Path>) {
+fn clear(dir: &Path, keep: &[&Path]) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
         let p = e.path();
-        if Some(p.as_path()) != keep && p.is_file() {
+        if !keep.contains(&p.as_path()) && p.is_file() {
             let _ = std::fs::remove_file(&p);
         }
     }
+}
+
+/// Before a new installer is saved: the earlier ones go, but not an update set to run when
+/// another copy of RustGIS closes, the note and the installer it names. The next start says
+/// whether that one ran.
+fn clear_for_download(dir: &Path) {
+    let note = dir.join(PENDING);
+    let pending = std::fs::read_to_string(&note).ok().map(|v| dir.join(installer_name(v.trim(), std::env::consts::ARCH)));
+    let mut keep = vec![note.as_path()];
+    keep.extend(pending.as_deref());
+    clear(dir, &keep);
 }
 
 /// A download under way: bytes so far and in all, and a way to stop it.
@@ -199,9 +210,7 @@ fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Co
     }
     let dir = updates_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // One installer kept: an earlier update's goes. The note stays: another copy of RustGIS may
-    // have an update set for when it closes, and the next start says whether it ran.
-    clear(&dir, Some(&dir.join(PENDING)));
+    clear_for_download(&dir);
     let path = dir.join(&installer.name);
     std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Saved { path, sha256: sha256(&bytes) })
@@ -309,8 +318,28 @@ mod tests {
         for n in ["RustGIS-0.5.0-windows-x86_64-setup.exe", PENDING, "keep.exe"] {
             std::fs::write(dir.path().join(n), b"x").unwrap();
         }
-        clear(dir.path(), Some(&dir.path().join("keep.exe")));
+        clear(dir.path(), &[&dir.path().join("keep.exe")]);
         let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left, ["keep.exe"]);
+    }
+
+    #[test]
+    fn a_download_keeps_the_update_another_copy_has_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let set = installer_name("0.6.0", std::env::consts::ARCH);
+        for n in ["RustGIS-0.5.0-windows-x86_64-setup.exe", set.as_str()] {
+            std::fs::write(dir.path().join(n), b"x").unwrap();
+        }
+        std::fs::write(dir.path().join(PENDING), "0.6.0\n").unwrap();
+        clear_for_download(dir.path());
+        let mut left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        left.sort();
+        let mut expected = [std::ffi::OsString::from(&set), PENDING.into()];
+        expected.sort();
+        assert_eq!(left, expected);
+        // Nothing set: every earlier installer goes.
+        std::fs::remove_file(dir.path().join(PENDING)).unwrap();
+        clear_for_download(dir.path());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

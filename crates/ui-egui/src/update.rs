@@ -40,18 +40,11 @@ enum Install {
     #[default]
     Idle,
     /// Downloading and checking `version`'s installer.
-    Downloading {
-        version: String,
-        progress: install::Progress,
-        slot: Slot<Result<install::Saved, String>>,
-    },
+    Downloading { version: String, progress: install::Progress, slot: Slot<Result<install::Saved, String>> },
     /// Checked and saved: it runs when RustGIS closes, once the user has said so (`at_exit`).
-    Ready {
-        version: String,
-        saved: install::Saved,
-        at_exit: bool,
-    },
-    Failed(String),
+    Ready { version: String, saved: install::Saved, at_exit: bool },
+    /// `version`'s download or check failed: shown with that release only.
+    Failed { version: String, error: String },
 }
 
 /// The installer the desktop app runs as it closes: the program, its switches, and the
@@ -320,7 +313,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     {
         app.update.install = match r {
             Ok(saved) => Install::Ready { version: version.clone(), saved, at_exit: false },
-            Err(e) => Install::Failed(e),
+            Err(error) => Install::Failed { version: version.clone(), error },
         };
     }
     let current = env!("CARGO_PKG_VERSION");
@@ -370,10 +363,12 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         let setup = install::setup_install().is_some();
                         let assets = if setup { install::assets_for(r, std::env::consts::ARCH) } else { None };
                         let stage = match &app.update.install {
-                            // A download of another release (an older check) doesn't count, but
-                            // an install already set for when RustGIS closes stays until it runs:
-                            // a new download would drop it without a word.
-                            Install::Downloading { version, .. } | Install::Ready { version, at_exit: false, .. }
+                            // A download of another release (an older check), or its failure,
+                            // doesn't count, but an install already set for when RustGIS closes
+                            // stays until it runs: a new download would drop it without a word.
+                            Install::Downloading { version, .. }
+                            | Install::Ready { version, at_exit: false, .. }
+                            | Install::Failed { version, .. }
                                 if *version != r.version =>
                             {
                                 &Install::Idle
@@ -419,19 +414,22 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                                 });
                             }
                             (stage, Some((installer, sums))) => {
-                                if let Install::Failed(e) = stage {
+                                if let Install::Failed { error, .. } = stage {
                                     ui.label(
                                         egui::RichText::new(crate::i18n::fmt(
                                             "Couldn't download the update: {error}",
-                                            &[("error", tl_raw!(e.as_str()))],
+                                            &[("error", tl_raw!(error.as_str()))],
                                         ))
                                         .color(ui.visuals().error_fg_color),
                                     );
                                     ui.add_space(4.0);
                                 }
                                 ui.horizontal(|ui| {
-                                    let label =
-                                        if matches!(stage, Install::Failed(_)) { tl!("Try Again") } else { tl!("Download and Install") };
+                                    let label = if matches!(stage, Install::Failed { .. }) {
+                                        tl!("Try Again")
+                                    } else {
+                                        tl!("Download and Install")
+                                    };
                                     if ui.button(label).clicked() {
                                         action = Some(Action::Download {
                                             version: r.version.clone(),
@@ -515,7 +513,7 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         *at_exit = true;
                         app.quit_requested = true;
                     }
-                    Err(e) => app.update.install = Install::Failed(e),
+                    Err(error) => app.update.install = Install::Failed { version: version.clone(), error },
                 }
             }
         }

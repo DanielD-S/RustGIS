@@ -521,11 +521,11 @@ fn main() -> eframe::Result {
         log::warn!("{e}");
         app.session.notify(e, true);
     }
-    // Help › Check for Updates' Install and Restart, last time: did the update arrive? Asked by
-    // the copy holding the run marker only: a second copy started while the first is still open
-    // would take the note of an update that hasn't run yet.
-    if let Ok(m) = &marker
-        && m.locked()
+    // Help › Check for Updates' Install and Restart, last time: did the update arrive? Not asked
+    // by a second copy, started while the first is still open: it would take the note of an
+    // update that hasn't run yet. A settings folder that can't lock can't tell a second copy
+    // apart, and is asked anyway: the notice isn't lost, at that small risk.
+    if marker.is_ok()
         && let Some((text, error)) = {
             rustgis_ui_egui::i18n::set_current(app.chosen_lang());
             rustgis_ui_egui::last_install_notice()
