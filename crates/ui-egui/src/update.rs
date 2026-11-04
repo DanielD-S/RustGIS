@@ -99,6 +99,7 @@ pub fn last_install_notice() -> Option<(String, bool)> {
 }
 
 /// Whether `a` and `b` name the same version (`v0.6.0` and `0.6.0`).
+#[cfg(not(target_arch = "wasm32"))]
 fn version_eq(a: &str, b: &str) -> bool {
     version(a).is_some() && !is_newer(a, b) && !is_newer(b, a)
 }
@@ -221,6 +222,7 @@ fn latest_url() -> String {
 }
 
 /// Whether `url` is plain HTTP to this computer, as `RUSTGIS_UPDATE_RELEASE` must be.
+#[cfg(not(target_arch = "wasm32"))]
 fn local_release(url: &str) -> bool {
     !url.starts_with("https://") && rustgis_engine::plugins::registry::allowed_url(url)
 }
@@ -585,6 +587,7 @@ mod tests {
         assert!(r.notes.ends_with('…') && r.notes_cut);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn only_a_release_on_this_computer_replaces_github_for_testing() {
         assert!(local_release("http://127.0.0.1:8765/release.json"));
@@ -596,6 +599,7 @@ mod tests {
         assert!(!local_release(""));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn versions_are_the_same_with_or_without_their_v() {
         assert!(version_eq("v0.6.0", "0.6.0") && version_eq("0.6", "0.6.0"));
