@@ -326,9 +326,11 @@ impl eframe::App for App {
     /// return from `run_native`: the run ended cleanly.
     fn on_exit(&mut self) {
         self.0.end_autosave();
-        running::close(&self.1);
+        // The installer starts before the marker goes, so a RustGIS started meanwhile finds this
+        // one still running.
         #[cfg(windows)]
         run_installer(&self.0);
+        running::close(&self.1);
     }
 }
 

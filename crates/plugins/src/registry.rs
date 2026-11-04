@@ -242,7 +242,11 @@ pub fn fetch_with_progress(
     let mut buf = Vec::new();
     let mut piece = vec![0u8; 64 * 1024];
     loop {
-        let n = reader.read(&mut piece).map_err(|e| format!("{url}: {e}"))?;
+        let n = match reader.read(&mut piece) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("{url}: {e}")),
+        };
         if n == 0 {
             break;
         }

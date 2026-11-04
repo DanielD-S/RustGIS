@@ -23,6 +23,10 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 const REPAINT: std::time::Duration = std::time::Duration::from_millis(100);
 /// The note Install and Restart leaves in the `updates` folder for the next start.
 const PENDING: &str = "installing.txt";
+/// How long the installer may still be at work after RustGIS closes: it waits up to 30 s for each
+/// of `rustgis.exe` and `rustgis-cli.exe` to be free (`packaging/windows/rustgis.nsi`), then
+/// installs.
+const INSTALLER_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 
 /// The name of this computer's installer in a release: `RustGIS-<version>-windows-<arch>-setup.exe`.
 pub(crate) fn installer_name(version: &str, arch: &str) -> String {
@@ -151,12 +155,18 @@ pub(crate) fn last_install(current: &str) -> Option<Result<String, String>> {
 }
 
 /// The installer opens RustGIS once it is done (`/RELAUNCH`), so the note is read after it. A
-/// RustGIS started by hand while the installer still waits holds `rustgis.exe`, and the installer
-/// stops without installing (code 2): "wasn't installed" is right. Only when that RustGIS is
-/// closed again within the installer's 30 s does the update arrive after the notice said it
-/// didn't; that rare case is left as it is.
+/// RustGIS started by hand while the installer may still be waiting (a note of another version,
+/// younger than [`INSTALLER_WAIT`]) leaves the note and the installer alone: closed in time, it
+/// lets the update install, and the RustGIS the installer opens says so; kept open, it makes the
+/// installer stop (code 2), and a later start says the update wasn't installed.
 fn last_install_in(dir: &Path, current: &str) -> Option<Result<String, String>> {
-    let version = std::fs::read_to_string(dir.join(PENDING)).ok()?.trim().to_string();
+    let note = dir.join(PENDING);
+    let version = std::fs::read_to_string(&note).ok()?.trim().to_string();
+    let young =
+        std::fs::metadata(&note).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age < INSTALLER_WAIT);
+    if young && !version.is_empty() && !super::version_eq(&version, current) {
+        return None;
+    }
     clear(dir, &[]);
     (!version.is_empty()).then(|| if super::version_eq(&version, current) { Ok(version) } else { Err(version) })
 }
@@ -343,9 +353,18 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         // Asked once only.
         assert_eq!(last_install_in(dir.path(), "0.6.0"), None);
-        // Still the old version: the update didn't happen, and the next start says so once.
+        // Still the old version, right after Install and Restart: the installer may still be
+        // waiting, so the note and the installer stay for the RustGIS it opens.
+        std::fs::write(dir.path().join("RustGIS-0.6.0-windows-x86_64-setup.exe"), b"x").unwrap();
         std::fs::write(dir.path().join(PENDING), "0.6.0").unwrap();
+        assert_eq!(last_install_in(dir.path(), "0.5.0"), None);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        // Still the old version once the installer is long done: the update didn't happen, and
+        // the start says so once.
+        let old = std::time::SystemTime::now() - INSTALLER_WAIT - std::time::Duration::from_secs(1);
+        std::fs::File::options().write(true).open(dir.path().join(PENDING)).unwrap().set_modified(old).unwrap();
         assert_eq!(last_install_in(dir.path(), "0.5.0"), Some(Err("0.6.0".into())));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         assert_eq!(last_install_in(dir.path(), "0.5.0"), None);
     }
 
