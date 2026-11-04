@@ -164,8 +164,10 @@ fn plain_notes(markdown: &str) -> String {
     for line in markdown.lines() {
         let trimmed = line.trim_start();
         let indent = line.get(..line.len() - trimmed.len()).unwrap_or_default();
-        let line = if trimmed.starts_with('#') {
-            trimmed.trim_start_matches('#').trim_start().to_string()
+        // A heading is `#`s then a space (or nothing): `#1290 fixed` stays as written.
+        let heading = trimmed.trim_start_matches('#');
+        let line = if heading.len() < trimmed.len() && (heading.is_empty() || heading.starts_with(' ')) {
+            heading.trim_start().to_string()
         } else if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
             format!("{indent}• {item}")
         } else {
@@ -640,6 +642,8 @@ mod tests {
             plain_notes(md),
             "Highlights\n• Layouts: see the guide.\n  • nested code\nPlain [brackets] stay, and a link too.\nFixes"
         );
+        // `#` with no space after it isn't a heading: an issue number keeps it.
+        assert_eq!(plain_notes("#1290 fixed\n### Notes"), "#1290 fixed\nNotes");
         assert_eq!(plain_notes("[unclosed](https://x"), "[unclosed](https://x");
         assert_eq!(plain_notes(""), "");
         // An image reads as its alt text; `__` stays (a name such as `__init__`).
