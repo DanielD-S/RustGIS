@@ -72,10 +72,16 @@ impl UpdateState {
     }
 
     /// The installer to run as RustGIS closes: set once the user chose Install and Restart. The
-    /// desktop app runs it from its exit (`apps/rustgis`).
+    /// desktop app runs it from its exit (`apps/rustgis`). Checked again here: the save question
+    /// can keep RustGIS open long after the click. A file changed since doesn't run, and the next
+    /// start says the update wasn't installed (its version is noted already).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn installer_at_exit(&self) -> Option<PendingInstall> {
         let Install::Ready { saved, at_exit: true, .. } = &self.install else { return None };
+        if let Err(e) = install::still_checked(&saved.path, &saved.sha256) {
+            log::warn!("The update isn't installed: {e}");
+            return None;
+        }
         let (args, folder) = install::installer_args(&install::setup_install()?);
         Some(PendingInstall { installer: saved.path.clone(), args, folder })
     }
@@ -364,8 +370,12 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         let setup = install::setup_install().is_some();
                         let assets = if setup { install::assets_for(r, std::env::consts::ARCH) } else { None };
                         let stage = match &app.update.install {
-                            // A download of another release (an older check) doesn't count.
-                            Install::Downloading { version, .. } | Install::Ready { version, .. } if *version != r.version => {
+                            // A download of another release (an older check) doesn't count, but
+                            // an install already set for when RustGIS closes stays until it runs:
+                            // a new download would drop it without a word.
+                            Install::Downloading { version, .. } | Install::Ready { version, at_exit: false, .. }
+                                if *version != r.version =>
+                            {
                                 &Install::Idle
                             }
                             s => s,
@@ -390,12 +400,13 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                                     action = Some(Action::Cancel);
                                 }
                             }
-                            (Install::Ready { at_exit, .. }, _) => {
+                            (Install::Ready { version, at_exit, .. }, _) => {
                                 ui.label(tl!(
                                     "The installer is downloaded and checked. RustGIS closes, installs the update and opens again."
                                 ));
                                 if *at_exit {
-                                    ui.label(egui::RichText::new(tl!("It installs when RustGIS closes.")).small().weak());
+                                    let text = crate::i18n::fmt("RustGIS {version} installs when RustGIS closes.", &[("version", version)]);
+                                    ui.label(egui::RichText::new(text).small().weak());
                                 }
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {

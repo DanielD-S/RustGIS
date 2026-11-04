@@ -96,9 +96,9 @@ pub(crate) fn installer_args(dir: &Path) -> (Vec<&'static str>, OsString) {
     (vec!["/S", "/RELAUNCH"], d)
 }
 
-/// Whether the saved installer is still the one that was checked, read again just before
-/// RustGIS closes to run it: a file removed or changed since says so while RustGIS can still
-/// show it, instead of an update that quietly doesn't happen.
+/// Whether the saved installer is still the one that was checked: read at Install and Restart, so
+/// a file removed or changed says so while RustGIS can still show it, and again as RustGIS closes
+/// to run it.
 pub(crate) fn still_checked(path: &Path, sha: &str) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if sha256(&bytes) != sha {
@@ -130,6 +130,11 @@ pub(crate) fn last_install(current: &str) -> Option<Result<String, String>> {
     last_install_in(&dir, current)
 }
 
+/// The installer opens RustGIS once it is done (`/RELAUNCH`), so the note is read after it. A
+/// RustGIS started by hand while the installer still waits holds `rustgis.exe`, and the installer
+/// stops without installing (code 2): "wasn't installed" is right. Only when that RustGIS is
+/// closed again within the installer's 30 s does the update arrive after the notice said it
+/// didn't; that rare case is left as it is.
 fn last_install_in(dir: &Path, current: &str) -> Option<Result<String, String>> {
     let version = std::fs::read_to_string(dir.join(PENDING)).ok()?.trim().to_string();
     clear(dir, None);
