@@ -49,7 +49,26 @@ pub(crate) fn sum_for(sums: &str, name: &str) -> Option<String> {
 
 /// The SHA-256 of `bytes`, in lower-case hex.
 fn sha256(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    hex(&Sha256::digest(bytes))
+}
+
+/// The SHA-256 of the file at `path`, read in pieces: a saved installer isn't held in memory to
+/// be checked again.
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut piece = vec![0; 64 * 1024];
+    loop {
+        match file.read(&mut piece)? {
+            0 => return Ok(hex(&hasher.finalize())),
+            n => hasher.update(piece.get(..n).unwrap_or_default()),
+        }
+    }
+}
+
+fn hex(digest: &[u8]) -> String {
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Every check an installer passes before it may run, in one place. Today: its SHA-256 is the
@@ -102,8 +121,7 @@ pub(crate) fn installer_args(dir: &Path) -> (Vec<&'static str>, OsString) {
 /// a file removed or changed says so while RustGIS can still show it, and again as RustGIS closes
 /// to run it.
 pub(crate) fn still_checked(path: &Path, sha: &str) -> Result<(), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if sha256(&bytes) != sha {
+    if sha256_file(path).map_err(|e| format!("{}: {e}", path.display()))? != sha {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         return Err(crate::i18n::fmt("{name} changed after it was checked: download it again.", &[("name", &name)]));
     }
@@ -229,7 +247,7 @@ fn download(installer: &Asset, sums: &Asset, progress: &Progress, ctx: &egui::Co
 /// RustGIS may have set that one to run as it closes, and rewriting it in place could fail the
 /// check it makes then.
 fn save(path: &Path, bytes: &[u8], sha: &str) -> Result<(), String> {
-    if std::fs::read(path).is_ok_and(|b| sha256(&b) == sha) {
+    if sha256_file(path).is_ok_and(|s| s == sha) {
         return Ok(());
     }
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
